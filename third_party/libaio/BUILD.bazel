@@ -1,0 +1,16 @@
+# Vendored libaio (see README.md for provenance).
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "libaio",
+    srcs = glob(["src/*.c"]),
+    hdrs = glob(["src/*.h"]),
+    includes = ["src"],
+    copts = [
+        # Third-party: styleguide allows suppressing warnings here.
+        "-w",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)

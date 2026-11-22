@@ -1,0 +1,38 @@
+# Bazel configuration for mustang.
+
+# System clang via the auto-configured C++ toolchain (styleguide: we build
+# with clang). repo_env is read by the local_config_cc repository rules.
+common --repo_env=CC=/usr/bin/clang
+common --repo_env=CXX=/usr/bin/clang++
+
+# Styleguide: static libraries, fully statically linked binaries.
+build --features=fully_static_link
+
+# One C++ standard for the whole build (styleguide: C++20). The toolchain
+# would otherwise default to c++17, which silently changes the mangling of
+# absl::SourceLocation between abseil libraries and mustang code
+# (std::source_location vs. the pre-C++20 fallback) and breaks linking.
+# Target-level copts (e.g. photon's -std=gnu++17) are applied after these
+# and still win.
+build --cxxopt=-std=c++20
+
+# Use OpenSSL as curl's TLS backend: photon's TLS code is written against
+# OpenSSL, so the whole tree shares one TLS stack (and boringssl lacks some
+# OpenSSL error codes photon uses, e.g. ERR_R_DISABLED).
+build --@curl//:ssl_lib=openssl
+
+common --color=yes
+common --curses=no
+build --verbose_failures
+test --test_output=errors
+
+# ASAN build: bazel test --config=asan (must stay green at all times).
+# The static ASan runtime requires a dynamic section, so it cannot be
+# combined with fully_static_link; the sanitizer config trades the static
+# link for instrumentation (production binaries stay fully static).
+build:asan --features=-fully_static_link
+build:asan --copt=-fsanitize=address
+build:asan --cxxopt=-fsanitize=address
+build:asan --linkopt=-fsanitize=address
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --cxxopt=-fno-omit-frame-pointer

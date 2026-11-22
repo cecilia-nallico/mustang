@@ -1,0 +1,234 @@
+/*
+Copyright 2022 The Photon Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+#include <photon/thread/thread.h>
+#include <photon/thread/timer.h>
+#include <photon/common/string-keyed.h>
+#include "../policy/lru.h"
+#include <photon/fs/cache/pool_store.h>
+
+#include <photon/fs/filesystem.h>
+
+namespace photon {
+namespace fs {
+
+// Abstract base for cold (non-hot) cache tiers.
+class ColdCacheTier {
+public:
+    virtual ~ColdCacheTier() = default;
+    virtual bool contains(std::string_view name) = 0;
+    virtual void remove(std::string_view name) = 0;
+    virtual void insert(std::string_view name) = 0;
+    virtual size_t size() = 0;
+    virtual bool empty() = 0;
+    // The returned view is valid until remove().
+    virtual std::string_view victim() = 0;
+};
+
+class InactiveCacheTier : public ColdCacheTier {
+public:
+    typedef map_string_key<uint32_t> IndexMap;
+    typedef photon::fs::LRU<IndexMap::iterator, uint32_t> LRUContainer;
+
+    bool contains(std::string_view name) override;
+    void remove(std::string_view name) override;
+    void insert(std::string_view name) override;
+    size_t size() override;
+    bool empty() override;
+    std::string_view victim() override;
+
+private:
+    LRUContainer lru_;
+    IndexMap index_;
+};
+
+class IdleCacheTier : public ColdCacheTier {
+public:
+    bool contains(std::string_view name) override;
+    void remove(std::string_view name) override;
+    void insert(std::string_view name) override;
+    size_t size() override;
+    bool empty() override;
+    std::string_view victim() override;
+
+private:
+    unordered_set_string_key<> index_;
+};
+
+class FileCachePool : public photon::fs::ICachePool {
+public:
+    FileCachePool(photon::fs::IFileSystem *mediaFs, uint64_t capacityInGB, uint64_t periodInUs,
+                  uint64_t diskAvailInBytes, uint64_t refillUnit,
+                  uint64_t storeCacheTTLUsecs = 10'000'000, bool asyncInit = false);
+    ~FileCachePool();
+
+    static const uint64_t kDiskBlockSize = 512; // stat(2)
+    static const uint64_t kDeleteDelayInUs = 1000;
+    static const uint32_t kWaterMarkRatio = 90;
+
+    void Init();
+
+    int set_quota(std::string_view pathname, size_t quota) override;
+    int stat(photon::fs::CacheStat *stat,
+             std::string_view pathname = std::string_view(nullptr, 0)) override;
+
+    int evict(std::string_view filename) override;
+    int evict(size_t size = 0) override;
+    int rename(std::string_view oldname, std::string_view newname) override;
+
+    struct LruEntry {
+        LruEntry(uint32_t lruIt, int openCnt, uint64_t fileSize)
+            : lruIter(lruIt), openCount(openCnt), size(fileSize), truncate_done(false) {
+        }
+        ~LruEntry() = default;
+        uint32_t lruIter;
+        int openCount;
+        uint64_t size;
+        // May concurrently be modified in store write path.
+        std::atomic<bool> truncate_done;
+    };
+
+    // Normally, fileIndex(std::map) always keep growing, so its iterators always
+    // keep valid, iterator will be erased when file be unlinked in period of eviction,
+    // but on that time corresponding CachedFile had been destructed, so nobody hold
+    // erased iterator.
+    typedef map_string_key<std::unique_ptr<LruEntry>> FileNameMap;
+
+    bool isFull();
+    void removeOpenFile(FileNameMap::iterator iter);
+    void forceRecycle();
+    void updateLru(FileNameMap::iterator iter);
+    // Updates size accounting for `iter`, doing the fstat inside m_lock_ so
+    // "read on-disk size + store it" is atomic against concurrent writers to the
+    // same file.
+    int64_t updateSpace(FileNameMap::iterator iter, photon::fs::IFile* localFile);
+
+    // True if the media filesystem supports fiemap. Decided once at Init()
+    // time by probing a named file. When false, FileCacheStore tracks filled
+    // ranges in memory from the start instead of relying on fiemap.
+    // Written only by probeFiemap() during Init(); plain bool is enough since
+    // all FileCacheStore reads happen-after Init().
+    bool fiemapSupported() const { return fiemapSupported_; }
+
+protected:
+    //  pathname must begin with '/'
+    photon::fs::ICacheStore *do_open(std::string_view pathname, int flags, mode_t mode) override;
+    photon::fs::IFile *openMedia(std::string_view name, int flags, int mode);
+
+    static uint64_t timerHandler(void *data);
+    virtual void eviction();
+    uint64_t calcWaterMark(uint64_t capacity, uint64_t maxFreeSpace);
+
+    // Throttled real disk-free-space probe used on the write path.
+    bool diskSpaceLow();
+    static const uint64_t kDiskCheckIntervalUs = 200'000; // 200ms
+
+    photon::fs::IFileSystem *mediaFs_; //  owned by current class
+    uint64_t capacityInGB_;
+    uint64_t periodInUs_;
+    uint64_t diskAvailInBytes_;
+    size_t refillUnit_;
+    int64_t totalUsed_;
+    int64_t riskMark_;
+    uint64_t waterMark_;
+
+    // Write-path disk-check throttle state.
+    uint64_t diskCheckStepBytes_ = 0; // bytes written between forced probes
+    uint64_t bytesSinceDiskCheck_ = 0;
+    uint64_t lastDiskCheckUs_ = 0;
+
+    photon::Timer *timer_;
+    std::atomic<bool> running_;
+    std::atomic<bool> exit_;
+
+    std::atomic<bool> isFull_;
+
+    // Guards all pool metadata.
+    photon::mutex m_lock_;
+
+    bool fiemapSupported_ = false;
+    void probeFiemap();
+
+    // Opens+truncates+finalizes. MUST be called without m_lock_.
+    bool evictOpenedFile(const std::string& name);
+    // Acquires m_lock_ and finalizes eviction bookkeeping.
+    bool finalizeEvicted(const std::string& name);
+    // With m_lock_ held.
+    virtual bool afterFtrucate(FileNameMap::iterator iter);
+
+    int traverseDir(const std::string &root);
+    virtual int insertFile(std::string_view file);
+
+    // Traversing dir in background thread so a large
+    // cache reuse does not block startup.
+    void backgroundScan();
+    bool asyncInit_ = false;
+    // The background scan thread.
+    photon::thread *scanThread_ = nullptr;
+    photon::join_handle *scanJoin_ = nullptr;
+    std::atomic<bool> scanDone_{false};  // set when the scan finishes
+
+    typedef photon::fs::LRU<FileNameMap::iterator, uint32_t> LRUContainer;
+    LRUContainer lru_;
+    // filename -> lruEntry
+    FileNameMap fileIndex_;
+
+    // Cold tiers: inactive (LRU-ordered) and idle (unordered).
+    // Eviction/promote cascades iterate coldTiers_ in order.
+    InactiveCacheTier inactiveTier_;
+    IdleCacheTier idleTier_;
+    std::array<ColdCacheTier*, 2> coldTiers_ = {&inactiveTier_, &idleTier_};
+
+    // Adaptive threshold tuning.
+    struct AdaptiveThreshold {
+        uint32_t min;
+        uint32_t max;
+        uint32_t value;
+
+        AdaptiveThreshold(int min, int max)
+            : min(min), max(max), value(min) {}
+        
+        void adapt(double ratio) {
+            value = std::max(min, std::min(max, static_cast<uint32_t>(value * ratio)));
+        }
+    };
+    std::array<AdaptiveThreshold, 2> thresholds_ = 
+        {AdaptiveThreshold(1'000, 100'000), AdaptiveThreshold(100'000, 100'000'000)};
+
+    static constexpr uint64_t kPromotesPerAdapt = 10'000;
+    uint64_t promoteCount_ = 0;
+    std::array<uint64_t, 3> tierHits_{};
+
+    void adaptThresholds();
+    void demoteToCold();
+
+    void promoteToHot(std::string_view filename);
+    ssize_t truncateAndUnlink(std::string_view filename);
+    ssize_t evictColdVictim(ColdCacheTier* tier, std::string_view name);
+
+    friend struct FileCachePoolTest;
+};
+
+}
+}

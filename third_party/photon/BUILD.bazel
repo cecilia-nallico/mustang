@@ -1,0 +1,101 @@
+# Vendored PhotonLibOS (see README.md for provenance and scope).
+
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "photon",
+    srcs = (
+        ["photon.cpp"] +
+        glob([
+            "common/*.cpp",
+            "common/checksum/*.cpp",
+            "common/executor/*.cpp",
+            "common/memory-stream/*.cpp",
+        ]) +
+        glob(["thread/*.cpp"]) + [
+            # Linux event engines + async IO plumbing.
+            "io/aio-wrapper.cpp",
+            "io/epoll.cpp",
+            "io/epoll-ng.cpp",
+            "io/iouring-wrapper.cpp",
+            "io/reset_handle.cpp",
+            "io/signal.cpp",
+        ] + [
+            "fs/aligned-file.cpp",
+            "fs/async_filesystem.cpp",
+            "fs/exportfs.cpp",
+            "fs/filecopy.cpp",
+            "fs/httpfs/httpfs.cpp",
+            "fs/httpfs/httpfs_v2.cpp",
+            "fs/localfs.cpp",
+            "fs/path.cpp",
+            "fs/subfs.cpp",
+            "fs/throttled-file.cpp",
+            "fs/virtual-file.cpp",
+            "fs/xfile.cpp",
+        ] +
+        glob(["net/http/*.cpp"]) + [
+            "net/basic_socket.cpp",
+            "net/curl.cpp",
+            "net/datagram_socket.cpp",
+            "net/iostream.cpp",
+            "net/kernel_socket.cpp",
+            "net/pooled_socket.cpp",
+            "net/security-context/tls-stream.cpp",
+            "net/utils.cpp",
+        ] + [
+            # Weak-symbol fallbacks referenced by fs/async_filesystem.cpp.
+            "third_party/easy_weak/easy_weak.cpp",
+        ]
+    ),
+    hdrs = ["photon.h"] + glob([
+        "include/photon/**/*.h",
+        # Internal headers included by photon sources with paths relative
+        # to their own .cpp; they must be declared so they exist in the
+        # action sandbox.
+        "common/**/*.h",
+        "thread/**/*.h",
+        "io/**/*.h",
+        "fs/**/*.h",
+        "net/**/*.h",
+        "third_party/**/*.h",
+    ]),
+    # "." is needed by photon's own sources, which include each other with
+    # paths relative to the repository root ("thread/thread.h", ...).
+    includes = ["include", "."],
+    defines = [
+        "ENABLE_CURL",
+        "PHOTON_URING=on",
+    ],
+    copts = [
+        # Photon's CMake defaults to C++14; 17 is the sweet spot for clang 21.
+        "-std=gnu++17",
+    ] + select({
+        "@platforms//cpu:x86_64": [
+            # Match upstream CMake SIMD flags (crc32c / atomics paths).
+            "-msse3",
+            "-mssse3",
+            "-msse4.1",
+            "-msse4.2",
+            "-mpopcnt",
+            "-mcx16",
+        ],
+        "@platforms//cpu:aarch64": [
+            "-fsigned-char",
+            "-fno-stack-protector",
+            "-fno-omit-frame-pointer",
+            "-mcpu=generic+crc+crypto+lse",
+        ],
+        "//conditions:default": [],
+    }),
+    # pthread/rt/dl match the link line of upstream's CMake build; on modern
+    # glibc rt and dl are no-ops but are kept for portability.
+    linkopts = ["-lpthread", "-ldl", "-lrt"],
+    deps = [
+        "//third_party/libaio",
+        "@curl//:curl",
+        "@liburing//:liburing",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
