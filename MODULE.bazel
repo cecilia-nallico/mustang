@@ -7,6 +7,9 @@ module(
 bazel_dep(name = "abseil-cpp", version = "20260817.0")
 bazel_dep(name = "curl", version = "8.23.0")
 bazel_dep(name = "googletest", version = "1.18.0.bcr.1")
+
+bazel_dep(name = "grpc", version = "1.85.4", dev_dependency = True)
+
 bazel_dep(name = "liburing", version = "2.15")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_cc", version = "0.2.28")

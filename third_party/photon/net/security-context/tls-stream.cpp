@@ -578,7 +578,11 @@ public:
                 case ERR_R_SHOULD_NOT_HAVE_BEEN_CALLED:
                 case ERR_R_PASSED_NULL_PARAMETER:
                 case ERR_R_INTERNAL_ERROR:
+                    // ERR_R_DISABLED does not exist in boringssl (mustang
+                    // local modification, see README.md).
+#ifdef ERR_R_DISABLED
                 case ERR_R_DISABLED:
+#endif
                     errno = EIO;
                     break;
                 default:

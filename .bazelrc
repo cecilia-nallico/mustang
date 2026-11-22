@@ -16,10 +16,9 @@ build --features=fully_static_link
 # and still win.
 build --cxxopt=-std=c++20
 
-# Use OpenSSL as curl's TLS backend: photon's TLS code is written against
-# OpenSSL, so the whole tree shares one TLS stack (and boringssl lacks some
-# OpenSSL error codes photon uses, e.g. ERR_R_DISABLED).
-build --@curl//:ssl_lib=openssl
+# One TLS stack for the whole tree: boringssl (the default for both curl
+# and grpc from BCR). Mixing curl-OpenSSL with grpc-boringssl duplicates
+# every ERR_*/EVP_* symbol in binaries that use both (interop tests).
 
 common --color=yes
 common --curses=no

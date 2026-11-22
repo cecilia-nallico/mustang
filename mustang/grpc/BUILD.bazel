@@ -143,3 +143,23 @@ mustang_cc_test(
         "@googletest//:gtest_main",
     ],
 )
+
+mustang_cc_test(
+    name = "interop_test",
+    srcs = ["interop_test.cc"],
+    # gRPC's own headers use deprecated APIs; sanctioned third-party warning
+    # suppression (styleguide).
+    copts = ["-Wno-deprecated-declarations"],
+    deps = [
+        ":call",
+        ":hpack",
+        ":server",
+        ":wire",
+        "//mustang:runtime",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+        "@grpc//:grpc++",
+    ],
+)

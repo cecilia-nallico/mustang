@@ -44,7 +44,8 @@ re-vendoring until upstream picks them up:
 - `net/security-context/tls-stream.cpp`: `TLSContextImpl(TLSVersion)` uses
   `TLS_method()` plus `SSL_CTX_set_{min,max}_proto_version` instead of the
   version-specific `TLSv1_1_method()`/`TLSv1_2_method()`, which were removed
-  in OpenSSL 4.0 (the TLS stack curl pulls in from BCR).
+  in OpenSSL 4.0; the `ERR_R_DISABLED` case is compiled only when the macro
+  exists (boringssl, the TLS stack curl/grpc pull in from BCR, lacks it).
 
 ## Updating
 

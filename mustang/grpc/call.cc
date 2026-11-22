@@ -229,7 +229,7 @@ absl::StatusOr<std::optional<std::string>> ClientCall::ReadMessage() {
     }
     absl::StatusOr<absl::string_view> chunk = stream_->RecvData(&response_end_);
     if (!chunk.ok()) {
-      return chunk.status();
+      return DeadlinePassed(deadline_) ? DeadlineStatus() : chunk.status();
     }
     pending_.assign(chunk->data(), chunk->size());
   }
