@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+#!/bin/bash
+
 # Format all first-party sources.
 #
 #   clang-format  every .h/.cc under mustang/   (config: /.clang-format)
