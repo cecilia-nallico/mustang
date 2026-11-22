@@ -13,6 +13,7 @@
 
 #include "photon/common/alog-stdstring.h"
 #include "photon/common/alog.h"
+#include "photon/net/socket.h"
 #include "photon/photon.h"
 #include "photon/thread/thread.h"
 #include "photon/thread/thread11.h"

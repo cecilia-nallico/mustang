@@ -1,4 +1,4 @@
-load("//tools:defaults.bzl", "mustang_cc_library", "mustang_cc_test")
+load("//tools:defaults.bzl", "mustang_cc_binary", "mustang_cc_library", "mustang_cc_test")
 
 mustang_cc_library(
     name = "hpack",
@@ -20,6 +20,34 @@ mustang_cc_test(
     srcs = ["hpack_test.cc"],
     deps = [
         ":hpack",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest_main",
+    ],
+)
+
+mustang_cc_library(
+    name = "connection",
+    srcs = ["connection.cc"],
+    hdrs = ["connection.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":hpack",
+        ":wire",
+        "//mustang:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+mustang_cc_test(
+    name = "connection_test",
+    srcs = ["connection_test.cc"],
+    deps = [
+        ":connection",
+        ":hpack",
+        "//mustang:runtime",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
         "@googletest//:gtest_main",
