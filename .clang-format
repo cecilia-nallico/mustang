@@ -10,4 +10,5 @@ BinPackParameters: false
 ExperimentalAutoDetectBinPacking: false
 AllowAllParametersOfDeclarationOnNextLine: false
 AllowAllArgumentsOnNextLine: false
-SortIncludes: Never
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve

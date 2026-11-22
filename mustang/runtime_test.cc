@@ -1,8 +1,9 @@
+#include "mustang/runtime.h"
+
 #include "absl/status/status.h"
 #include "gtest/gtest.h"
 
 #include "mustang/photon_headers.h"
-#include "mustang/runtime.h"
 
 namespace mustang {
 namespace {

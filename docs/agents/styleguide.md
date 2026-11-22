@@ -16,6 +16,12 @@ When we need a third party dependency, check if it's available in the bazel cent
 method. If not, use bazel rules to vendor it in and write a bazel build for it yourself.
 
 Build rules and patches for third-party go under `third_party`.
+Every `third_party/<dep>` directory carries a README.md recording the upstream version and commit,
+the license, what is compiled and any local modifications.
+
+First-party C++ targets are always declared through the `mustang_cc_*` macros in
+`tools/defaults.bzl` (they own the strict warning flags and static linking); never raw `cc_*` rules.
+`tools/scripts/format.sh` (clang-format + buildifier) must pass with `--check` before every commit.
 
 We build using clang and target the standard C++20.
 Our parts of the code must enable all warnings and always build warnings free.
@@ -25,7 +31,7 @@ Maitain an ASAN build that must be green at all times.
 ## File organization
 
 Use the monorepo style. Files go under `mustang/foo.cc` , `mustang/bar/baz.cc`, etc.
-Import style is fully qualified: `#include "mustang/bar/baz.cc"`.
+Import style is fully qualified: `#include "mustang/bar/baz.h"`.
 File suffixes are ".h" and ".cc" for headers.
 
 ## C++ style
@@ -39,6 +45,7 @@ Use this style:
 
 ```c
 // in a cc file, its own header always goes first.
+// in a test file, the header under test is its own header.
 #include "mustang/foo.h"
 
 // system headers are in angle brackets. C and C++ are mixed together. 
@@ -55,22 +62,39 @@ Use this style:
 #include "mustang/baz.h"
 ```
 
+Within each block, includes are sorted alphabetically (enforced by clang-format).
+
 ### Libraries
 
 We use Abseil as a base library. Use it extensively in particular always favor the Abseil libraries
 instead of the standard.
 
-  - Time manipulation is Abseil time.
-  - Containers when available: `node_hash_map`, `node_hash_set`, `InlinedVector` for small vectors.
-  - String manipulation: `StrCat` and the likes.
+  - Strings: `absl::string_view` (never `std::`), `StrCat`, `StrSplit`, `StrJoin`.
+  - Containers: `flat_hash_map`/`flat_hash_set` by default, `node_hash_map`/`node_hash_set` when
+    pointer or reference stability is needed, `InlinedVector` for small vectors, `btree_map` for
+    ordered maps.
+  - Time: `absl::Time` and `absl::Duration`, never `time(3)` or `std::chrono`.
+  - Errors: `absl::Status`, `absl::StatusOr`, `absl::ErrnoToStatus` for errno.
   - Flags for command line arguments.
+  - Scope guards: `absl::Cleanup`, preferred over photon's `DEFER` in mustang code.
+  - Wide integers: `absl::int128`.
 
 We use PhotonLibOS as our general coroutine/event loop. Always use PhotonLibOS for:
 
   - Networking and interactions with the filesystem: it must be done in an async way.
   - Threading: assume from day 1 that we will have a thread per core design, and will have multiple vCPU. 
     Use a photon thread pool for blocking tasks.
+  - Synchronization: never `std::mutex`, `absl::Mutex` or std/absl condition variables — they block
+    the whole vCPU across a yield. Always use the photon primitives: `photon::mutex`,
+    `photon::condvar`, `SCOPED_LOCK`.
   - Log: we use PhotonLibOS logs instead of Abseil.
+
+Photon headers are included only through the umbrella `mustang/photon_headers.h` (extend the
+umbrella when a new photon header is needed); direct `photon/...` includes are not allowed in
+mustang code.
+
+Photon logging conventions: backtick as variable placeholder (`LOG_WARN("count `", n)`), `VALUE(x)`
+to log a variable's name and value, `LOG_ERROR_RETURN` when logging and returning an error.
 
 ### Exceptions
 
@@ -96,7 +120,18 @@ Always use braces for `if` statements, even around one liner `if` statements.
 All headers start with `#pragma once`. Not old style header guards.
 All code is in namespace `mustang`. Use anonymous namespace in `.cc` files every time it's possible.
 
-No extra whitespace before or after namespace declaration.
+No blank line directly after a `namespace ... {` opening and none directly before a
+`}  // namespace` closing:
+
+```c
+namespace mustang {
+namespace {
+constexpr int kFoo = 1;
+}  // namespace
+
+int Api();
+}  // namespace mustang
+```
 
 ## Comments
 

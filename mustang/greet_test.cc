@@ -1,7 +1,7 @@
+#include "mustang/greet.h"
+
 #include "absl/status/status.h"
 #include "gtest/gtest.h"
-
-#include "mustang/greet.h"
 
 namespace mustang {
 namespace {
