@@ -12,13 +12,18 @@ mustang_cc_library(
 )
 
 mustang_cc_library(
+    name = "photon_headers",
+    hdrs = ["photon_headers.h"],
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/photon"],
+)
+
+mustang_cc_library(
     name = "runtime",
     srcs = ["runtime.cc"],
-    hdrs = [
-        "photon_headers.h",
-        "runtime.h",
-    ],
+    hdrs = ["runtime.h"],
     deps = [
+        ":photon_headers",
         "//third_party/photon",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",

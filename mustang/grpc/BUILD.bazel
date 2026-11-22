@@ -1,0 +1,27 @@
+load("//tools:defaults.bzl", "mustang_cc_library", "mustang_cc_test")
+
+mustang_cc_library(
+    name = "hpack",
+    srcs = ["hpack.cc"],
+    hdrs = ["hpack.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//mustang:photon_headers",
+        "//third_party/photon",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/types:span",
+    ],
+)
+
+mustang_cc_test(
+    name = "hpack_test",
+    srcs = ["hpack_test.cc"],
+    deps = [
+        ":hpack",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest_main",
+    ],
+)

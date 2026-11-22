@@ -1,7 +1,34 @@
 # Plan 0002 — gRPC client & server on top of PhotonLibOS
 
-Status: APPROVED — M0 DONE (protocol checklist in 0002-notes-grpc-protocol.md),
-M1 (all tests written, red) is next. Photon master pin: fe63fab.
+Status: APPROVED — M0 DONE, M2 h2 audit DONE (see "M1/M2 audit result"
+below). Implementing unit-by-unit: hpack → wire → connection → grpc
+loopback → interop, each layer tests-first then green.
+Photon master pin: fe63fab.
+
+## M1/M2 audit result (2026-11-22, done at vendoring time)
+
+Photon master's h2 layer is a useful **codec foundation but not a usable
+transport**:
+
+- demux: frames arriving for a stream without a coroutine parked in a recv
+  call are answered with RST(PROTOCOL_ERROR); recv_data's parked-reader path
+  reads shared Impl state — multiplexed gRPC traffic breaks.
+- flow control: absent — no WINDOW_UPDATE on receive, send ignores peer
+  windows and MAX_FRAME_SIZE (single giant DATA frame).
+- CONTINUATION: never sent nor reassembled; padding never stripped;
+  header blocks capped at 8 KiB buffers.
+- HPACK: static table only — no dynamic table, so real gRPC peers (which
+  index :path etc.) cannot be decoded.
+
+Consequence (supersedes "fix photon's Impl" in M2): **mustang owns the h2
+transport** — `mustang/grpc/connection` (reader coroutine demux into
+per-stream queues, serialized writer, both-level flow control, CONTINUATION,
+padding, SETTINGS, PING, GOAWAY) and `mustang/grpc/hpack` (full RFC 7541:
+static + dynamic tables, eviction, size updates, huffman both ways, reusing
+photon's `net/http/huffman` codec). Reused from photon as-is: `FrameHeader`
+frame codec (streams.h), preface string, huffman, sockets/event loop.
+Photon patches: none beyond the existing TLS one. Test corpus unchanged
+(R/H rules), interop remains the oracle.
 
 Goal (PROJECT.md): a full, compliant gRPC client and server implementation on
 PhotonLibOS, as the transport foundation for the bazel cache and action

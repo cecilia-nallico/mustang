@@ -16,5 +16,9 @@
 #include "photon/photon.h"
 #include "photon/thread/thread.h"
 #include "photon/thread/thread11.h"
+// Internal photon headers not (yet) exported under include/photon/; they
+// resolve through the photon library's exported root include path.
+#include "net/http/huffman/codec.h"
+#include "net/http/streams.h"
 
 #pragma clang diagnostic pop
