@@ -305,7 +305,7 @@ absl::StatusOr<Stream*> Connection::OpenStream() {
 
 absl::StatusOr<Stream*> Connection::AcceptStream() {
   SCOPED_LOCK(mu_);
-  bool ok = accept_cv_.wait(mu_, [&]() { return !accept_queue_.empty() || !conn_error_.ok(); });
+  bool ok = accept_cv_.wait(mu_, [&]() { return !accept_queue_.empty() || !conn_error_.ok() || going_away_; });
   (void)ok;
   if (!accept_queue_.empty()) {
     uint32_t id = accept_queue_.front();

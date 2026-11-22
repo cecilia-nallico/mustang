@@ -64,6 +64,8 @@ class MessageDecoder {
 
   MessageDecoder(const MessageDecoder&) = delete;
   MessageDecoder& operator=(const MessageDecoder&) = delete;
+  MessageDecoder(MessageDecoder&&) = default;
+  MessageDecoder& operator=(MessageDecoder&&) = default;
 
   // Consumes from *data (advancing it). Returns a complete frame, std::nullopt
   // when more data is needed, or an error on protocol violation. A payload
@@ -71,7 +73,9 @@ class MessageDecoder {
   absl::StatusOr<std::optional<MessageFrame>> Next(absl::string_view* data);
 
  private:
-  const size_t max_message_size_;
+  // Not const so the implicitly-defaulted move assignment stays alive
+  // (StatusOr<ClientCall> needs to move calls around).
+  size_t max_message_size_;
   std::string header_;   // partial 5-byte prefix across chunks
   std::string payload_;  // partial payload across chunks
   bool have_header_ = false;

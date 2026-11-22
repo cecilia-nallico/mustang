@@ -47,6 +47,7 @@ mustang_cc_test(
     deps = [
         ":connection",
         ":hpack",
+        ":test_util",
         "//mustang:runtime",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
@@ -73,6 +74,69 @@ mustang_cc_test(
     srcs = ["wire_test.cc"],
     deps = [
         ":wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+    ],
+)
+
+mustang_cc_library(
+    name = "test_util",
+    hdrs = ["test_util.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//mustang:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+mustang_cc_library(
+    name = "call",
+    srcs = ["call.cc"],
+    hdrs = ["call.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":connection",
+        ":hpack",
+        ":wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+mustang_cc_library(
+    name = "server",
+    srcs = ["server.cc"],
+    hdrs = ["server.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":call",
+        ":connection",
+        ":hpack",
+        ":wire",
+        "//mustang:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+mustang_cc_test(
+    name = "grpc_test",
+    srcs = ["grpc_test.cc"],
+    deps = [
+        ":call",
+        ":hpack",
+        ":server",
+        ":test_util",
+        ":wire",
+        "//mustang:runtime",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/strings",
         "@abseil-cpp//absl/time",
