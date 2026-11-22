@@ -25,3 +25,29 @@ mustang_cc_test(
         "@googletest//:gtest_main",
     ],
 )
+
+mustang_cc_library(
+    name = "wire",
+    srcs = ["wire.cc"],
+    hdrs = ["wire.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":hpack",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+mustang_cc_test(
+    name = "wire_test",
+    srcs = ["wire_test.cc"],
+    deps = [
+        ":wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+    ],
+)
