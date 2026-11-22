@@ -6,11 +6,11 @@ cc_library(
     name = "libaio",
     srcs = glob(["src/*.c"]),
     hdrs = glob(["src/*.h"]),
-    includes = ["src"],
     copts = [
         # Third-party: styleguide allows suppressing warnings here.
         "-w",
     ],
+    includes = ["src"],
     linkstatic = True,
     visibility = ["//visibility:public"],
 )

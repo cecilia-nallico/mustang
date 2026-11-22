@@ -15,10 +15,8 @@ TEST(RuntimeTest, RejectsInvalidLogLevel) {
 }
 
 TEST(RuntimeTest, MapsEventEngineNames) {
-  EXPECT_EQ(EventEngineFromName("auto").value_or(0),
-            photon::INIT_EVENT_DEFAULT);
-  EXPECT_EQ(EventEngineFromName("iouring").value_or(0),
-            photon::INIT_EVENT_IOURING);
+  EXPECT_EQ(EventEngineFromName("auto").value_or(0), photon::INIT_EVENT_DEFAULT);
+  EXPECT_EQ(EventEngineFromName("iouring").value_or(0), photon::INIT_EVENT_IOURING);
   EXPECT_EQ(EventEngineFromName("epoll").value_or(0), photon::INIT_EVENT_EPOLL);
   EXPECT_FALSE(EventEngineFromName("io_uring!").ok());
 }

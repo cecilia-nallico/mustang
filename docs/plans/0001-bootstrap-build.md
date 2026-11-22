@@ -35,8 +35,8 @@ binaries, ASAN config) before any real feature work.
    - `main.cc`: binary `//mustang:mustang` — parses absl flags
      (`--name/--log_level/--event_engine`), initializes photon runtime +
      logs, greets from a coroutine, joins, shuts down cleanly.
-   - `mustang_e2e_test.sh` (sh_test): runs the binary, asserts greeting,
-     flag validation, exit codes.
+   - `tools/mustang_e2e_test.sh` (sh_test in `tools/BUILD.bazel`): runs the
+     binary, asserts greeting, flag validation, exit codes.
    - `photon_headers.h`: umbrella include silencing clang diagnostics
      inside photon public headers only (they are not -Wextra clean and the
      styleguide only allows suppressing warnings for third-party code).

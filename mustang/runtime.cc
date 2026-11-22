@@ -29,15 +29,13 @@ absl::StatusOr<uint64_t> EventEngineFromName(absl::string_view name) {
     return photon::INIT_EVENT_SELECT;
   }
   return absl::InvalidArgumentError(
-      absl::StrCat("unknown event engine '", name,
-                   "' (want auto|epoll|epoll-ng|iouring|select)"));
+      absl::StrCat("unknown event engine '", name, "' (want auto|epoll|epoll-ng|iouring|select)"));
 }
 
 absl::StatusOr<Runtime> Runtime::Create(const RuntimeOptions& options) {
   if (options.log_level < kLogLevelDebug || options.log_level > kMaxLogLevel) {
     return absl::InvalidArgumentError(
-        absl::StrCat("log_level must be in [", kLogLevelDebug, ", ",
-                     kMaxLogLevel, "], got ", options.log_level));
+        absl::StrCat("log_level must be in [", kLogLevelDebug, ", ", kMaxLogLevel, "], got ", options.log_level));
   }
   // Photon filters at output time, so the level applies immediately and
   // covers photon::init's own logging below.
@@ -49,9 +47,7 @@ absl::StatusOr<Runtime> Runtime::Create(const RuntimeOptions& options) {
   return Runtime(/*active=*/true);
 }
 
-Runtime::Runtime(Runtime&& other) noexcept : active_(other.active_) {
-  other.active_ = false;
-}
+Runtime::Runtime(Runtime&& other) noexcept : active_(other.active_) { other.active_ = false; }
 
 Runtime::~Runtime() {
   if (active_) {

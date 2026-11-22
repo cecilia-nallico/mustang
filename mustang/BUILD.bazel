@@ -14,12 +14,15 @@ mustang_cc_library(
 mustang_cc_library(
     name = "runtime",
     srcs = ["runtime.cc"],
-    hdrs = ["photon_headers.h", "runtime.h"],
+    hdrs = [
+        "photon_headers.h",
+        "runtime.h",
+    ],
     deps = [
+        "//third_party/photon",
         "@abseil-cpp//absl/status",
         "@abseil-cpp//absl/status:statusor",
         "@abseil-cpp//absl/strings",
-        "//third_party/photon",
     ],
 )
 
@@ -31,10 +34,10 @@ mustang_cc_binary(
     deps = [
         ":greet",
         ":runtime",
+        "//third_party/photon",
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
         "@abseil-cpp//absl/status",
-        "//third_party/photon",
     ],
 )
 
@@ -53,8 +56,8 @@ mustang_cc_test(
     srcs = ["runtime_test.cc"],
     deps = [
         ":runtime",
+        "//third_party/photon",
         "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",
-        "//third_party/photon",
     ],
 )

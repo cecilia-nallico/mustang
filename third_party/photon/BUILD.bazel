@@ -5,14 +5,14 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "photon",
     srcs = (
-        ["photon.cpp"] +
-        glob([
+        ["photon.cpp"] + glob([
             "common/*.cpp",
             "common/checksum/*.cpp",
             "common/executor/*.cpp",
             "common/memory-stream/*.cpp",
-        ]) +
-        glob(["thread/*.cpp"]) + [
+        ]) + glob([
+            "thread/*.cpp",
+        ]) + [
             # Linux event engines + async IO plumbing.
             "io/aio-wrapper.cpp",
             "io/epoll.cpp",
@@ -33,8 +33,9 @@ cc_library(
             "fs/throttled-file.cpp",
             "fs/virtual-file.cpp",
             "fs/xfile.cpp",
-        ] +
-        glob(["net/http/*.cpp"]) + [
+        ] + glob([
+            "net/http/*.cpp",
+        ]) + [
             "net/basic_socket.cpp",
             "net/curl.cpp",
             "net/datagram_socket.cpp",
@@ -60,13 +61,6 @@ cc_library(
         "net/**/*.h",
         "third_party/**/*.h",
     ]),
-    # "." is needed by photon's own sources, which include each other with
-    # paths relative to the repository root ("thread/thread.h", ...).
-    includes = ["include", "."],
-    defines = [
-        "ENABLE_CURL",
-        "PHOTON_URING=on",
-    ],
     copts = [
         # Photon's CMake defaults to C++14; 17 is the sweet spot for clang 21.
         "-std=gnu++17",
@@ -88,14 +82,28 @@ cc_library(
         ],
         "//conditions:default": [],
     }),
+    defines = [
+        "ENABLE_CURL",
+        "PHOTON_URING=on",
+    ],
+    # "." is needed by photon's own sources, which include each other with
+    # paths relative to the repository root ("thread/thread.h", ...).
+    includes = [
+        ".",
+        "include",
+    ],
     # pthread/rt/dl match the link line of upstream's CMake build; on modern
     # glibc rt and dl are no-ops but are kept for portability.
-    linkopts = ["-lpthread", "-ldl", "-lrt"],
-    deps = [
-        "//third_party/libaio",
-        "@curl//:curl",
-        "@liburing//:liburing",
+    linkopts = [
+        "-lpthread",
+        "-ldl",
+        "-lrt",
     ],
     linkstatic = True,
     visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/libaio",
+        "@curl",
+        "@liburing",
+    ],
 )

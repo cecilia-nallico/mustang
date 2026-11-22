@@ -9,20 +9,16 @@
 #include "mustang/photon_headers.h"
 #include "mustang/runtime.h"
 
-ABSL_FLAG(std::string, name, "world",
-          "Name that mustang greets on startup.");
-ABSL_FLAG(int, log_level, mustang::kLogLevelInfo,
-          "PhotonLibOS log level: 0=debug 1=info 2=warn 3=error 4=fatal.");
-ABSL_FLAG(std::string, event_engine, "auto",
-          "PhotonLibOS event engine: auto|epoll|epoll-ng|iouring|select.");
+ABSL_FLAG(std::string, name, "world", "Name that mustang greets on startup.");
+ABSL_FLAG(int, log_level, mustang::kLogLevelInfo, "PhotonLibOS log level: 0=debug 1=info 2=warn 3=error 4=fatal.");
+ABSL_FLAG(std::string, event_engine, "auto", "PhotonLibOS event engine: auto|epoll|epoll-ng|iouring|select.");
 
 namespace mustang {
 namespace {
 absl::Status RealMain() {
   RuntimeOptions options;
   options.log_level = absl::GetFlag(FLAGS_log_level);
-  absl::StatusOr<uint64_t> event_engine =
-      EventEngineFromName(absl::GetFlag(FLAGS_event_engine));
+  absl::StatusOr<uint64_t> event_engine = EventEngineFromName(absl::GetFlag(FLAGS_event_engine));
   if (!event_engine.ok()) {
     return event_engine.status();
   }

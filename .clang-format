@@ -1,0 +1,13 @@
+---
+Language:        Cpp
+BasedOnStyle:  Google
+ColumnLimit:     120
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+BinPackArguments: false
+BinPackParameters: false
+ExperimentalAutoDetectBinPacking: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+SortIncludes: Never

@@ -50,7 +50,7 @@ vertical slice proving the whole stack. `bazel build //...` and
 
 - `//mustang:greet_test`, `//mustang:runtime_test` (gtest; runtime test
   runs a coroutine with a timer sleep and joins it),
-  `//mustang:mustang_e2e_test` (sh_test executing the real binary, flags
+  `//tools:mustang_e2e_test` (sh_test executing the real binary, flags
   and exit codes).
 - ASAN: `--config=asan` exists (asan + frame pointers, full-static
   disabled under asan because the static ASan runtime requires a dynamic
@@ -68,4 +68,6 @@ bazel build //...            # everything (fully static binaries)
 bazel test  //...            # unit + e2e tests
 bazel test --config=asan //...   # once the AppProtection preload issue is fixed
 bazel run   //mustang:mustang -- --name=you --log_level=0 --event_engine=iouring
+tools/scripts/format.sh      # clang-format mustang/**, buildifier all BUILD files
+tools/scripts/format.sh --check   # verify only, non-zero exit if unformatted
 ```
