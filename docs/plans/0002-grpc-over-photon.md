@@ -1,6 +1,7 @@
 # Plan 0002 — gRPC client & server on top of PhotonLibOS
 
-Status: PROPOSED (awaiting review; kickoff = M0)
+Status: APPROVED — M0 DONE (protocol checklist in 0002-notes-grpc-protocol.md),
+M1 (all tests written, red) is next. Photon master pin: fe63fab.
 
 Goal (PROJECT.md): a full, compliant gRPC client and server implementation on
 PhotonLibOS, as the transport foundation for the bazel cache and action
