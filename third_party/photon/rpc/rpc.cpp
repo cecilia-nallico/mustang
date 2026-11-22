@@ -20,7 +20,7 @@ limitations under the License.
 #include <netinet/tcp.h>
 #include <photon/thread/thread11.h>
 #include <photon/thread/thread-pool.h>
-#include <photon/thread/list.h>
+#include <photon/common/intrusive_list.h>
 #include <photon/common/utility.h>
 #include <photon/common/alog.h>
 #include <photon/common/timeout.h>
@@ -478,8 +478,12 @@ namespace rpc {
             if (!sock)
                 LOG_ERRNO_RETURN(0, nullptr, "failed to connect to ", ep);
             LOG_DEBUG("connected to ", ep);
-            sock->timeout(-1UL);
+            sock->timeout(-1ULL);
             if (tls) {
+                // The pool is keyed by endpoint and carries no hostname, so
+                // there is no name to check the peer certificate against; TLS
+                // here protects the channel, not the peer's identity. Verifying
+                // the peer requires a hostname, which this API does not accept.
                 sock = net::new_tls_stream(tls_ctx, sock, net::SecurityRole::Client, true);
             }
             return sock;
@@ -513,7 +517,7 @@ namespace rpc {
                                      "Connect to unix domain socket failed");
                 }
                 // stub socket always set timeout for single action
-                sock->timeout(-1UL);
+                sock->timeout(-1ULL);
                 return new_rpc_stub(sock, true);
             });
         }

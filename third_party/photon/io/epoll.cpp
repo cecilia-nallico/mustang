@@ -213,7 +213,7 @@ ok:     entry.interests |= eint;
             if (ret < 0) {
                 ERRNO err;
                 if (err.no == EINTR) continue;
-                ::usleep(1024L * cool_down_ms);
+                ::usleep(1024LL * cool_down_ms);
                 if (cool_down_ms > 16)
                     LOG_ERROR_RETURN(err.no, -1, "epoll_wait() failed ", err);
                 timeout = sat_sub(timeout, cool_down_ms);
@@ -292,6 +292,8 @@ ok:     entry.interests |= eint;
         return n;
     }
     virtual int cancel_wait() override { return eventfd_write(_evfd, 1); }
+
+    std::string_view get_engine_name() const override { return "epoll"; }
 
     int wait_for_fd(int fd, uint32_t interest, Timeout timeout) override {
         if (fd < 0)

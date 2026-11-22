@@ -5,14 +5,14 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "photon",
     srcs = (
-        ["photon.cpp"] + glob([
+        ["photon.cpp"] +
+        glob([
             "common/*.cpp",
             "common/checksum/*.cpp",
             "common/executor/*.cpp",
             "common/memory-stream/*.cpp",
-        ]) + glob([
-            "thread/*.cpp",
-        ]) + [
+        ]) +
+        glob(["thread/*.cpp"]) + [
             # Linux event engines + async IO plumbing.
             "io/aio-wrapper.cpp",
             "io/epoll.cpp",
@@ -33,9 +33,10 @@ cc_library(
             "fs/throttled-file.cpp",
             "fs/virtual-file.cpp",
             "fs/xfile.cpp",
-        ] + glob([
-            "net/http/*.cpp",
-        ]) + [
+        ] +
+        # HTTP/1.x server+client, and the HTTP/2 layer (H2Connection /
+        # H2Stream + HPACK + huffman) that mustang gRPC builds on.
+        glob(["net/http/*.cpp", "net/http/huffman/codec.cpp"]) + [
             "net/basic_socket.cpp",
             "net/curl.cpp",
             "net/datagram_socket.cpp",
@@ -50,7 +51,11 @@ cc_library(
         ]
     ),
     hdrs = ["photon.h"] + glob([
-        "include/photon/**/*.h",
+        # include/ also ships compat headers (sys/, netinet/, arpa/, ...) that
+        # override system ones during photon compiles; they must be inputs.
+        "include/**/*.h",
+        # HPACK huffman tables included by codec.cpp ("code.i"/"tree.i").
+        "net/http/huffman/*.i",
         # Internal headers included by photon sources with paths relative
         # to their own .cpp; they must be declared so they exist in the
         # action sandbox.
@@ -61,6 +66,13 @@ cc_library(
         "net/**/*.h",
         "third_party/**/*.h",
     ]),
+    # "." is needed by photon's own sources, which include each other with
+    # paths relative to the repository root ("thread/thread.h", ...).
+    includes = ["include", "."],
+    defines = [
+        "ENABLE_CURL",
+        "PHOTON_URING=on",
+    ],
     copts = [
         # Photon's CMake defaults to C++14; 17 is the sweet spot for clang 21.
         "-std=gnu++17",
@@ -82,28 +94,14 @@ cc_library(
         ],
         "//conditions:default": [],
     }),
-    defines = [
-        "ENABLE_CURL",
-        "PHOTON_URING=on",
-    ],
-    # "." is needed by photon's own sources, which include each other with
-    # paths relative to the repository root ("thread/thread.h", ...).
-    includes = [
-        ".",
-        "include",
-    ],
     # pthread/rt/dl match the link line of upstream's CMake build; on modern
     # glibc rt and dl are no-ops but are kept for portability.
-    linkopts = [
-        "-lpthread",
-        "-ldl",
-        "-lrt",
+    linkopts = ["-lpthread", "-ldl", "-lrt"],
+    deps = [
+        "//third_party/libaio",
+        "@curl//:curl",
+        "@liburing//:liburing",
     ],
     linkstatic = True,
     visibility = ["//visibility:public"],
-    deps = [
-        "//third_party/libaio",
-        "@curl",
-        "@liburing",
-    ],
 )

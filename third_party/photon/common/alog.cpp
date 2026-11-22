@@ -20,6 +20,7 @@ limitations under the License.
 #include "alog.h"
 #include "lockfree_queue.h"
 #include "photon/thread/thread.h"
+#include "photon/io/fd-events.h"
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -32,33 +33,81 @@ limitations under the License.
 #include <algorithm>
 #include <thread>
 #include <chrono>
+#include <photon/common/iovector.h>
 #include <sys/uio.h>
+#include <vector>
 #include <sys/time.h>
 using namespace std;
 
+static uint32_t now0;
+
 class BaseLogOutput : public ILogOutput {
 public:
-    uint64_t throttle = -1UL;
+    uint64_t throttle = -1ULL;
     uint64_t count = 0;
-    time_t ts = 0;
+    uint32_t ts = 0;
     int log_file_fd;
-
     constexpr BaseLogOutput(int fd = 0) : log_file_fd(fd) { }
+    unsigned char level_color[ALOG_AUDIT + 1] = { ALOG_COLOR_DARKGRAY,
+           ALOG_COLOR_NOTHING, ALOG_COLOR_YELLOW, ALOG_COLOR_RED,
+           ALOG_COLOR_MAGENTA, ALOG_COLOR_CYAN,   ALOG_COLOR_GREEN};
+    void clear_color() { memset(level_color, 0, sizeof(level_color)); }
+    uint16_t decode(uint16_t c) {
+        c = ((c & 0xf) << 8) | (c >> 4);
+        return c + *(uint16_t*)"00";
+    }
+    uint16_t get_color(unsigned int level) {
+        if (level < LEN(level_color))
+            if (auto c = level_color[level])
+                return decode(c);
+        return 0;
+    }
+    int set_level_color(int level, unsigned char code) override {
+        if ((uint32_t)level > ALOG_AUDIT)
+            LOG_ERROR_RETURN(EINVAL, -1, "invalid level ", level);
+        auto dx = decode(code);
+        if ((dx < decode(ALOG_COLOR_BLACK) &&
+             dx > decode(ALOG_COLOR_LIGHTGRAY)) /* not in 3x range */
+            && (dx < decode(ALOG_COLOR_DARKGRAY) &&
+                dx > decode(ALOG_COLOR_LIGHTWHITE)) /* not in 9x range */
+            && (dx != decode(ALOG_COLOR_NOTHING))) {
+            LOG_ERROR_RETURN(EINVAL, -1, "invalid color code ", HEX(code));
+        }
+        level_color[level] = code;
+        return 0;
+    }
 
-    void write(int, const char* begin, const char* end) override {
-        std::ignore = ::write(log_file_fd, begin, end - begin);
+    struct LineIOV {
+        struct iovec iov[3];
+        size_t total_length;
+        uint8_t iovst, iovcnt;
+        char color_prefix[6] = "\033[00m";
+        LineIOV(uint16_t color, const char* begin, const char* end) {
+            total_length = end - begin;
+            iov[1] = {(void*)begin, total_length};
+            if (!color) {
+                iovst = iovcnt = 1;
+            } else {
+                *(uint16_t*)&color_prefix[2] = color;
+                iov[0] = {color_prefix, LEN(color_prefix) - 1};
+                constexpr static char color_suffix[] = "\033[0m";
+                iov[2] = {(void*)color_suffix, LEN(color_suffix) - 1};
+                total_length += iov[0].iov_len + iov[2].iov_len;
+                iovst = 0; iovcnt = 3;
+            }
+        }
+        iovec* start() { return iov + iovst; }
+        int count() { return iovcnt; }
+    };
+    void write(int level, const char* begin, const char* end) override {
+        LineIOV iov(get_color(level), begin, end);
+        std::ignore = ::writev(log_file_fd, iov.start(), iov.count());
         throttle_block();
     }
     void throttle_block() {
-        if (throttle == -1UL) return;
-        time_t t = time(0);
-        if (t > ts) {
-            ts = t;
-            count = 0;
-        }
-        if (++count > throttle) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
+        if (throttle == -1ULL) return;
+        if (ts != now0) { ts = now0; count = 0; }
+        if (++count > throttle) { ::sleep(1); }
     }
     virtual int get_log_file_fd() override { return log_file_fd; }
     virtual uint64_t set_throttle(uint64_t t = -1) override { return throttle = t; }
@@ -141,7 +190,7 @@ void LogFormatter::put_integer_hbo(ALogBuffer& buf, ALogInteger X)
     // print (in reversed order)
     auto x = X.uvalue();
     auto shift = X.shift();
-    unsigned char mask = (1UL << shift) - 1;
+    unsigned char mask = (1ULL<< shift) - 1;
     auto begin = buf.ptr;
     do { put(buf, "0123456789ABCDEFH" [x & mask]);
     } while (x >>= shift);
@@ -243,6 +292,11 @@ public:
     atomic<uint64_t> log_file_size{0};
     unsigned int log_file_max_cnt = 10;
 
+    LogOutputFile() {
+        // no colors by default when log into files
+        BaseLogOutput::clear_color();
+    }
+
     virtual void destruct() override {
         log_output_file_close();
         delete this;
@@ -253,16 +307,11 @@ public:
         return open(fn, O_CREAT | O_WRONLY | O_APPEND, mode);
     }
 
-    void write(int, const char* begin, const char* end) override {
+    void write(int level, const char* begin, const char* end) override {
         if (log_file_fd < 0) return;
         uint64_t length = end - begin;
-        iovec iov{(void*)begin, length};
-#ifndef _WIN64
-        std::ignore = ::writev(log_file_fd, &iov, 1); // writev() is atomic, whereas write() is not
-#else
-        std::ignore = ::write(log_file_fd, iov.iov_base, iov.iov_len);
-#endif
-        throttle_block();
+        // iovec iov{(void*)begin, length};
+        BaseLogOutput::write(level, begin, end);
         if (log_file_name && log_file_size_limit) {
             log_file_size += length;
             if (log_file_size > log_file_size_limit) {
@@ -370,64 +419,96 @@ public:
     }
 };
 
-class AsyncLogOutput final : public ILogOutput {
+static const uint64_t SPSC_CAPACITY     = 1024 * 1024ULL;
+static const int      MIN_NUM_OF_QUEUES = 1;
+static const int      MAX_NUM_OF_QUEUES = 128;
+static const uint32_t MAX_YIELD_TURNS   = 1024;
+
+class AsyncLogOutput final : public BaseLogOutput {
 public:
     ILogOutput* log_output;
-    std::mutex mt;
-    std::condition_variable cv;
+    photon::semaphore sem;
     std::thread background;
-    LockfreeSPSCRingQueue<iovec, 16384> pending;
-    photon::spinlock lock;
+    typedef LockfreeSPSCRingQueue<char, SPSC_CAPACITY> spsc;
+    std::vector<std::unique_ptr<spsc>> buf;
+    std::vector<std::unique_ptr<photon::spinlock>> lock;
+    int num_of_queues;
     bool stopped = false;
 
-    AsyncLogOutput(ILogOutput* output) : log_output(output) {
-        background = std::thread([&] {
-            auto log_file_fd = log_output->get_log_file_fd();
-            auto wb = [this, log_file_fd] {
-                iovec iov;
-                while (pending.pop(iov)) {
-                    log_output->write(log_file_fd, (char*)iov.iov_base, (char*)iov.iov_base + iov.iov_len);
-                    delete[] (char*)iov.iov_base;
-                }
-            };
-            while (!stopped) {
-                uint64_t interval = 1000UL;
-                if (!pending.empty()) {
-                    interval = 100UL;
-                    wb();
-                }
-                std::unique_lock<std::mutex> l(mt);
-                if (!stopped) cv.wait_for(l, std::chrono::milliseconds(interval));
-            }
-            if (!pending.empty()) wb();
-        });
+    AsyncLogOutput(ILogOutput* output, int num) : log_output(output), num_of_queues(num) {
+        // no colors by default when log into files
+        BaseLogOutput::clear_color();
+        if (num_of_queues < MIN_NUM_OF_QUEUES) num_of_queues = MIN_NUM_OF_QUEUES;
+        if (num_of_queues > MAX_NUM_OF_QUEUES) num_of_queues = MAX_NUM_OF_QUEUES;
+        num_of_queues = 1 << (31 - __builtin_clz(num_of_queues));  // Aligned to 2^n
+        buf.reserve(num_of_queues);
+        lock.reserve(num_of_queues);
+        for (int i = 0; i < num_of_queues; ++i) {
+            buf.emplace_back(new spsc());
+            lock.emplace_back(new photon::spinlock());
+        }
+        background = std::thread(&AsyncLogOutput::worker, this);
     }
 
-    void write(int, const char* begin, const char* end) override {
-        uint64_t length = end - begin;
-        auto buf = new char[length];
-        memcpy(buf, begin, length);
-        iovec iov{buf, length};
-        bool pushed = ({
-            SCOPED_LOCK(lock);
-            pending.push(iov);
-        });
-        if (!pushed) {
-            delete[] buf;
-            cv.notify_all();
+    void worker() {
+        photon::vcpu_init();
+        photon::fd_events_init(photon::INIT_EVENT_EPOLL);
+        uint32_t yield_turn = 0;
+        while (!stopped) {
+            if (writeback() == 0) {
+                if (yield_turn < MAX_YIELD_TURNS) {
+                    photon::thread_yield();
+                    ++yield_turn;
+                } else {
+                    // wait for 100ms
+                    sem.wait(1, 100ULL * 1000);
+                }
+            } else {
+                yield_turn = 0;
+            }
         }
+        photon::fd_events_fini();
+        photon::vcpu_fini();
+        (void)writeback();
+    }
+
+    uint64_t writeback() {
+        uint64_t cc = 0;
+        for (int i = 0; i < num_of_queues; ++i) {
+            cc += buf[i]->consume_pop_batch(UINT32_MAX, [&](const char* p1, size_t n1,
+                                                            const char* p2, size_t n2) {
+                // no level and coloring again, by passing -1
+                log_output->write(-1, p1, p1 + n1);
+                if (n2) log_output->write(-1, p2, p2 + n2);
+            });
+        }
+        return cc;
+    }
+
+    void write(int level, const char* begin, const char* end) override {
+        static thread_local uint64_t index = 0;
+        auto current = (++index) & (num_of_queues - 1);
+        size_t ra;
+        LineIOV iov(get_color(level), begin, end); {
+            SCOPED_LOCK(lock[current].get());
+            ra = buf[current]->read_available();
+            (void)buf[current]->produce_push_batch_fully(iov.total_length,
+                [&](char* p1, size_t n1, char* p2, size_t n2) {
+                    iovec d[2] = {{p1, n1}, {p2, n2}};
+                    iovector_view dest(d, 2), src(iov.start(), iov.count());
+                    dest.memcpy_from(&src, iov.total_length);
+                });
+        }
+        if (ra + iov.total_length > spsc::SLOTS_NUM / 2 && ra <= spsc::SLOTS_NUM / 2) { sem.signal(1); }
     }
     virtual int get_log_file_fd() override { return log_output->get_log_file_fd(); }
-    virtual uint64_t set_throttle(uint64_t t = -1UL) override { return log_output->set_throttle(t); }
+    virtual uint64_t set_throttle(uint64_t t = -1ULL) override { return log_output->set_throttle(t); }
     virtual uint64_t get_throttle() override { return log_output->get_throttle(); }
     virtual void destruct() override {
         if (!stopped) {
-            {
-                std::unique_lock<std::mutex> l(mt);
-                stopped = true;
-                cv.notify_all();
-            }
-            background.join();
+            stopped = true;
+            sem.signal(1);
+            if (background.joinable()) background.join();
         }
         delete this;
     }
@@ -459,8 +540,8 @@ ILogOutput* new_log_output_file(int fd, uint64_t throttle) {
     return ret;
 }
 
-ILogOutput* new_async_log_output(ILogOutput* output) {
-    return output ? new AsyncLogOutput(output) : nullptr;
+ILogOutput* new_async_log_output(ILogOutput* output, int num_of_queues) {
+    return output ? new AsyncLogOutput(output, num_of_queues) : nullptr;
 }
 
 // default_log_file is not defined in header
@@ -508,14 +589,14 @@ struct TM : tm {
     }
     void update(uint64_t now0) {
         auto now = now0 + tsdelta;
-        tm_usec = cut(now, 1000000ul);
+        tm_usec = cut(now, 1000000ull);
         time_t ts = now;
         tm_sec = cut(now, 60);
         if (unlikely(now != minuteid)) {    // calibrate wall time every minute
             struct timeval tv;
             gettimeofday(&tv, NULL);
             tv.tv_sec -= timezone;
-            now = tv.tv_sec * 1000000ul + tv.tv_usec;
+            now = tv.tv_sec * 1000000ull + tv.tv_usec;
             tsdelta = now - now0;
             tm_usec = tv.tv_usec;
             now = ts = tv.tv_sec;

@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WslotsANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+WITHOUT WANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
@@ -19,9 +19,11 @@ limitations under the License.
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #ifndef __aarch64__
 #include <immintrin.h>
@@ -31,47 +33,11 @@ limitations under the License.
 #include <photon/common/utility.h>
 #include <photon/thread/thread.h>
 
-#define size_t uint64_t
-
-template <size_t x>
-struct Capacity_2expN {
-    constexpr static size_t capacity = Capacity_2expN<(x >> 1)>::capacity << 1;
-    constexpr static size_t mask = capacity - 1;
-    constexpr static size_t shift = Capacity_2expN<(x >> 1)>::shift + 1;
-    constexpr static size_t lshift = Capacity_2expN<(x >> 1)>::lshift - 1;
-
-    static_assert(shift + lshift == sizeof(size_t) * 8, "...");
-};
-
-template <size_t x>
-constexpr size_t Capacity_2expN<x>::capacity;
-
-template <size_t x>
-constexpr size_t Capacity_2expN<x>::mask;
-
-template <>
-struct Capacity_2expN<0> {
-    constexpr static size_t capacity = 2;
-    constexpr static size_t mask = 1;
-    constexpr static size_t shift = 1;
-    constexpr static size_t lshift = 8 * sizeof(size_t) - shift;
-};
-
-template <>
-struct Capacity_2expN<1> : public Capacity_2expN<0> {};
-
-template <>
-struct Capacity_2expN<2> : public Capacity_2expN<0> {};
-
 struct PauseBase {};
 
 struct CPUPause : PauseBase {
     inline static __attribute__((always_inline)) void pause() {
-#ifdef __aarch64__
-        asm volatile("isb" : : : "memory");
-#else
-        _mm_pause();
-#endif
+        photon::spin_wait();
     }
 };
 
@@ -81,13 +47,19 @@ struct ThreadPause : PauseBase {
     }
 };
 
-namespace photon {
-int thread_yield();
-}
 struct PhotonPause : PauseBase {
     inline static __attribute__((always_inline)) void pause() {
         photon::thread_yield();
     }
+};
+
+struct CPUCacheLine {
+#if (defined(__aarch64__) || defined(__arm64__)) && defined(__APPLE__)
+    // ARM64 cache line size is 128 bytes on Apple Silicon
+    constexpr static size_t SIZE = 128;
+#else
+    constexpr static size_t SIZE = 64;
+#endif
 };
 
 template <typename T>
@@ -98,7 +70,7 @@ struct is_shared_ptr<std::shared_ptr<T>> : std::true_type {};
 template <typename T, size_t N>
 class LockfreeRingQueueBase {
 public:
-#if __cplusplus < 201402L
+#if __cplusplus < 201402LL
     static_assert((std::has_trivial_copy_constructor<T>::value &&
                    std::has_trivial_copy_assign<T>::value) ||
                       is_shared_ptr<T>::value,
@@ -110,16 +82,32 @@ public:
                   "T should be trivially copyable");
 #endif
 
-    constexpr static size_t CACHELINE_SIZE = 64;
+    constexpr static size_t SLOTS_NUM =
+        N ? 1ULL<< (8 * sizeof(size_t) - __builtin_clzll(N - 1)) : 0;
 
-    constexpr static size_t capacity = Capacity_2expN<N>::capacity;
-    constexpr static size_t mask = Capacity_2expN<N>::mask;
-    constexpr static size_t shift = Capacity_2expN<N>::shift;
-    constexpr static size_t lshift = Capacity_2expN<N>::lshift;
+    const size_t capacity;
+    const size_t mask;
+    const size_t shift;
+    const size_t lshift;
 
-    alignas(CACHELINE_SIZE) std::atomic<size_t> tail{0};
-    alignas(CACHELINE_SIZE) std::atomic<size_t> head{0};
+    alignas(CPUCacheLine::SIZE) std::atomic<size_t> tail{0};
+    alignas(CPUCacheLine::SIZE) std::atomic<size_t> head{0};
 
+    // For only flexible queue
+    explicit LockfreeRingQueueBase(size_t c)
+        : capacity(c > 1 ? 1ULL<< (8 * sizeof(size_t) - __builtin_clzll(c - 1))
+                         : 2),
+          mask(capacity - 1),
+          shift(__builtin_ctzll(capacity)),
+          lshift(8 * sizeof(size_t) - shift) {}
+
+    // For only deterministic queue
+    LockfreeRingQueueBase()
+        : capacity(N > 1 ? 1ULL<< (8 * sizeof(size_t) - __builtin_clzll(N - 1))
+                         : 2),
+          mask(capacity - 1),
+          shift(__builtin_ctzll(capacity)),
+          lshift(8 * sizeof(size_t) - shift) {}
     bool empty() {
         return check_empty(head.load(std::memory_order_relaxed),
                            tail.load(std::memory_order_relaxed));
@@ -156,11 +144,49 @@ protected:
     size_t turn(size_t x) const { return x >> shift; }
 };
 
+template <typename T, typename Q>
+class FlexQueue : public Q {
+protected:
+    FlexQueue(size_t c) : Q(c) {}
+    ~FlexQueue() {}
+
+public:
+    static FlexQueue* create(size_t c) {
+        size_t space = required_space(c);
+        void* ptr = nullptr;
+        auto err = posix_memalign(&ptr, CPUCacheLine::SIZE, required_space(c));
+        if (err) return nullptr;
+        memset(ptr, 0, space);
+        return new (ptr) FlexQueue(c);
+    }
+
+    static size_t required_space(size_t c) {
+        size_t capacity =
+            c > 1 ? 1ULL<< (8 * sizeof(size_t) - __builtin_clzll(c - 1)) : 2;
+        return sizeof(Q) + capacity * sizeof(T);
+    }
+
+    static FlexQueue* init_on(void* ptr, size_t c) {
+        if (!ptr) return nullptr;
+        return new (ptr) FlexQueue(c);
+    }
+
+    static void deinit(FlexQueue* q) {
+        if (!q) return;
+        q->~FlexQueue();
+    }
+
+    static void destroy(FlexQueue* q) {
+        deinit(q);
+        free(q);
+    }
+};
+
 // !!NOTICE: DO NOT USE LockfreeMPMCRingQueue in IPC
 // This queue may block if one of processes crashed during push / pop
 // Do not use as IPC base. Use it to collect data and send by
 // LockfreeSPSCRingQueue
-template <typename T, size_t N>
+template <typename T, size_t N, typename MarkType = uint64_t>
 class LockfreeMPMCRingQueue : public LockfreeRingQueueBase<T, N> {
 protected:
     using Base = LockfreeRingQueueBase<T, N>;
@@ -169,30 +195,63 @@ protected:
     using Base::idx;
     using Base::tail;
 
-    std::atomic<uint64_t> marks[Base::capacity]{};
-    T slots[Base::capacity];
+public:
+    struct alignas(CPUCacheLine::SIZE) packedslot {
+        T data;
+        std::atomic<MarkType> mark{0};
+    };
 
-    uint64_t this_turn_write(const uint64_t x) const {
+protected:
+    packedslot slots[Base::SLOTS_NUM];
+
+    MarkType this_turn_write(const uint64_t x) const {
         return (Base::turn(x) << 1) + 1;
     }
 
-    uint64_t this_turn_read(const uint64_t x) const {
-        return (Base::turn(x) << 1) + 2;
+    MarkType this_turn_read(const uint64_t x) const {
+        // The next writer of this slot also wraps with the uint64_t counter.
+        return last_turn_read(x + this->capacity);
     }
 
-    uint64_t last_turn_read(const uint64_t x) const {
+    MarkType last_turn_read(const uint64_t x) const {
         return Base::turn(x) << 1;
     }
 
+    explicit LockfreeMPMCRingQueue(size_t c) : Base(c) {}
+
+    struct NativeWait {
+        void operator()(uint64_t) const { ThreadPause::pause(); }
+    };
+
 public:
     using Base::empty;
-    using Base::full;
+
+    explicit LockfreeMPMCRingQueue() : Base() {}
+
+    // head counts claims, not completed reads. A claim does not free its slot.
+    bool full() const {
+        auto t = tail.load(std::memory_order_acquire);
+        return slots[idx(t)].mark.load(std::memory_order_acquire) !=
+               last_turn_read(t);
+    }
+
+    // Concurrent snapshot of consecutively reusable slots, O(capacity).
+    size_t write_available() const {
+        auto t = tail.load(std::memory_order_acquire);
+        size_t n = 0;
+        while (n < this->capacity &&
+               slots[idx(t + n)].mark.load(std::memory_order_acquire) ==
+                   last_turn_read(t + n))
+            ++n;
+        return n;
+    }
 
     bool push(const T& x) {
         auto t = tail.load(std::memory_order_acquire);
         for (;;) {
-            auto& slot = slots[idx(t)];
-            auto& mark = marks[idx(t)];
+            auto& ps = slots[idx(t)];
+            auto& slot = ps.data;
+            auto& mark = ps.mark;
             if (mark.load(std::memory_order_acquire) == last_turn_read(t)) {
                 if (tail.compare_exchange_strong(t, t + 1)) {
                     slot = x;
@@ -201,35 +260,47 @@ public:
                 }
             } else {
                 auto const prevTail = t;
-                auto h = head.load(std::memory_order_acquire);
                 t = tail.load(std::memory_order_acquire);
-                if (t == prevTail && Base::check_full(h, t)) {
-                    return false;
-                }
+                // Let send() apply its backoff while this slot is still held.
+                if (t == prevTail) return false;
             }
         }
     }
 
     bool pop(T& x) {
+        return pop(x, [] {});
+    }
+
+    // Claim only producer-reserved positions. Once claimed, a position cannot
+    // be abandoned; other consumers can claim later positions while we wait.
+    // Inject waiting so raw pop() does not require a coroutine runtime.
+    template <typename OnUnpublishedClaim, typename Wait = NativeWait>
+    bool pop(T& x, OnUnpublishedClaim on_unpublished_claim, Wait wait = {}) {
         auto h = head.load(std::memory_order_acquire);
         for (;;) {
-            auto& slot = slots[idx(h)];
-            auto& mark = marks[idx(h)];
-            if (mark.load(std::memory_order_acquire) == this_turn_write(h)) {
-                if (head.compare_exchange_strong(h, h + 1)) {
-                    x = slot;
-                    mark.store(this_turn_read(h), std::memory_order_release);
-                    return true;
-                }
-            } else {
-                auto const prevHead = h;
-                auto t = tail.load(std::memory_order_acquire);
-                h = head.load(std::memory_order_acquire);
-                if (h == prevHead && Base::check_empty(h, t)) {
-                    return false;
-                }
+            auto t = tail.load(std::memory_order_acquire);
+            // Raw recv() can preclaim future positions. The signed difference
+            // also handles counter wraparound.
+            if (static_cast<int64_t>(t - h) <= 0) return false;
+            if (head.compare_exchange_strong(h, h + 1)) break;
+        }
+
+        auto& ps = slots[idx(h)];
+        auto expected = this_turn_write(h);
+        if (ps.mark.load(std::memory_order_acquire) != expected) {
+            // Wake another consumer before waiting for our producer. This
+            // does not release a slot and must not notify blocked senders.
+            on_unpublished_claim();
+            // The last claim makes empty() true, so later publication may not
+            // notify us. Poll the mark instead of using empty-queue parking.
+            for (uint64_t i = 0; ps.mark.load(std::memory_order_acquire) != expected; ++i) {
+                if (i < 64) CPUPause::pause();
+                else wait(i);
             }
         }
+        x = ps.data;
+        ps.mark.store(this_turn_read(h), std::memory_order_release);
+        return true;
     }
 
     template <typename Pause = ThreadPause>
@@ -237,8 +308,9 @@ public:
         static_assert(std::is_base_of<PauseBase, Pause>::value,
                       "Pause should be derived by PauseBase");
         auto const t = tail.fetch_add(1);
-        auto& slot = slots[idx(t)];
-        auto& mark = marks[idx(t)];
+        auto& ps = slots[idx(t)];
+        auto& slot = ps.data;
+        auto& mark = ps.mark;
         while (mark.load(std::memory_order_acquire) != last_turn_read(t))
             Pause::pause();
         slot = x;
@@ -250,8 +322,9 @@ public:
         static_assert(std::is_base_of<PauseBase, Pause>::value,
                       "Pause should be derived by PauseBase");
         auto const h = head.fetch_add(1);
-        auto& slot = slots[idx(h)];
-        auto& mark = marks[idx(h)];
+        auto& ps = slots[idx(h)];
+        auto& slot = ps.data;
+        auto& mark = ps.mark;
         while (mark.load(std::memory_order_acquire) != this_turn_write(h))
             Pause::pause();
         T ret = slot;
@@ -259,6 +332,11 @@ public:
         return ret;
     }
 };
+
+template <typename T>
+using FlexLockfreeMPMCRingQueue =
+    FlexQueue<typename LockfreeMPMCRingQueue<T, 0>::packedslot,
+              LockfreeMPMCRingQueue<T, 0>>;
 
 template <typename T, size_t N>
 class LockfreeBatchMPMCRingQueue : public LockfreeRingQueueBase<T, N> {
@@ -272,36 +350,27 @@ protected:
     using Base::idx;
     using Base::tail;  // write_tail
 
-    alignas(Base::CACHELINE_SIZE) std::atomic<uint64_t> write_head{0};
-    alignas(Base::CACHELINE_SIZE) std::atomic<uint64_t> read_tail{0};
+    alignas(CPUCacheLine::SIZE) std::atomic<size_t> write_head{0};
+    alignas(CPUCacheLine::SIZE) std::atomic<size_t> read_tail{0};
 
-    T slots[Base::capacity];
-
-    uint64_t this_turn_write(const uint64_t x) const {
-        return (Base::turn(x) << 1) + 1;
-    }
-
-    uint64_t this_turn_read(const uint64_t x) const {
-        return (Base::turn(x) << 1) + 2;
-    }
-
-    uint64_t last_turn_read(const uint64_t x) const {
-        return Base::turn(x) << 1;
-    }
+    T slots[Base::SLOTS_NUM];
+    explicit LockfreeBatchMPMCRingQueue(size_t c) : Base(c) {}
 
 public:
     using Base::empty;
     using Base::full;
 
-    size_t push_batch(const T *x, size_t n) {
+    explicit LockfreeBatchMPMCRingQueue() : Base() {}
+
+    size_t push_batch(const T* x, size_t n) {
         size_t rh, wt;
         wt = tail.load(std::memory_order_acquire);
         for (;;) {
             rh = head.load(std::memory_order_acquire);
             auto wn = std::min(n, Base::capacity - (wt - rh));
-            if (wn == 0)
-                return 0;
-            if (!tail.compare_exchange_strong(wt, wt + wn, std::memory_order_acq_rel))
+            if (wn == 0) return 0;
+            if (!tail.compare_exchange_strong(wt, wt + wn,
+                                              std::memory_order_acq_rel))
                 continue;
             auto first_idx = idx(wt);
             auto part_length = Base::capacity - first_idx;
@@ -310,28 +379,28 @@ public:
             } else {
                 if (likely(part_length))
                     memcpy(&slots[first_idx], x, sizeof(T) * (part_length));
-                memcpy(&slots[0], x + part_length, sizeof(T) * (wn - part_length));
+                memcpy(&slots[0], x + part_length,
+                       sizeof(T) * (wn - part_length));
             }
             auto wh = wt;
-            while (!write_head.compare_exchange_strong(wh, wt + wn, std::memory_order_acq_rel))
+            while (!write_head.compare_exchange_strong(
+                wh, wt + wn, std::memory_order_acq_rel))
                 wh = wt;
             return wn;
         }
     }
 
-    bool push(const T &x) {
-        return push_batch(&x, 1) == 1;
-    }
+    bool push(const T& x) { return push_batch(&x, 1) == 1; }
 
-    size_t pop_batch(T *x, size_t n) {
+    size_t pop_batch(T* x, size_t n) {
         size_t rt, wh;
         rt = read_tail.load(std::memory_order_acquire);
         for (;;) {
             wh = write_head.load(std::memory_order_acquire);
             auto rn = std::min(n, wh - rt);
-            if (rn == 0)
-                return 0;
-            if (!read_tail.compare_exchange_strong(rt, rt + rn, std::memory_order_acq_rel))
+            if (rn == 0) return 0;
+            if (!read_tail.compare_exchange_strong(rt, rt + rn,
+                                                   std::memory_order_acq_rel))
                 continue;
             auto first_idx = idx(rt);
             auto part_length = Base::capacity - first_idx;
@@ -340,10 +409,12 @@ public:
             } else {
                 if (likely(part_length))
                     memcpy(x, &slots[first_idx], sizeof(T) * (part_length));
-                memcpy(x + part_length, &slots[0], sizeof(T) * (rn - part_length));
+                memcpy(x + part_length, &slots[0],
+                       sizeof(T) * (rn - part_length));
             }
             auto rh = rt;
-            while (!head.compare_exchange_strong(rh, rt + rn, std::memory_order_acq_rel))
+            while (!head.compare_exchange_strong(rh, rt + rn,
+                                                 std::memory_order_acq_rel))
                 rh = rt;
             return rn;
         }
@@ -409,6 +480,10 @@ public:
     }
 };
 
+template <typename T>
+using FlexLockfreeBatchMPMCRingQueue =
+    FlexQueue<T, LockfreeBatchMPMCRingQueue<T, 0>>;
+
 template <typename T, size_t N>
 class LockfreeSPSCRingQueue : public LockfreeRingQueueBase<T, N> {
 protected:
@@ -417,11 +492,15 @@ protected:
     using Base::idx;
     using Base::tail;
 
-    T slots[Base::capacity];
+    T slots[Base::SLOTS_NUM];
+
+    explicit LockfreeSPSCRingQueue(size_t c) : Base(c) {}
 
 public:
     using Base::empty;
     using Base::full;
+
+    explicit LockfreeSPSCRingQueue() : Base() {}
 
     bool push(const T& x) {
         auto t = tail.load(std::memory_order_acquire);
@@ -440,6 +519,16 @@ public:
     }
 
     size_t push_batch(const T* x, size_t n) {
+        return produce_push_batch(n, [&](T* p1, size_t n1, T* p2, size_t n2) {
+            memcpy(p1, x, n1 * sizeof(T)); x += n1;
+            if (n2) { memcpy(p2, x, n2 * sizeof(T)); }
+        });
+    }
+
+    // Producer must be callable as produce(T* offset1, size_t n, T* offset2, size_t n),
+    // and produce (write) data directly to the provided buffer.
+    template<typename Producer>
+    size_t produce_push_batch(size_t n, Producer&& produce) {
         auto t = tail.load(std::memory_order_relaxed);
         n = std::min(
             n, Base::capacity - (t - head.load(std::memory_order_acquire)));
@@ -447,28 +536,53 @@ public:
         auto first_idx = idx(t);
         auto part_length = Base::capacity - first_idx;
         if (likely(part_length >= n)) {
-            memcpy(&slots[first_idx], x, sizeof(T) * n);
+            produce(&slots[first_idx], n, nullptr, 0);
         } else {
-            if (likely(part_length))
-                memcpy(&slots[first_idx], x, sizeof(T) * (part_length));
-            memcpy(&slots[0], x + part_length, sizeof(T) * (n - part_length));
+            produce(&slots[first_idx], part_length,
+                    &slots[0], n - part_length);
+        }
+        tail.store(t + n, std::memory_order_release);
+        return n;
+    }
+
+    template<typename Producer>
+    size_t produce_push_batch_fully(size_t n, Producer&& produce) {
+        auto t = tail.load(std::memory_order_relaxed);
+        if (n > Base::capacity - (t - head.load(std::memory_order_acquire))) return 0;
+        auto first_idx = idx(t);
+        auto part_length = Base::capacity - first_idx;
+        if (likely(part_length >= n)) {
+            produce(&slots[first_idx], n, nullptr, 0);
+        } else {
+            produce(&slots[first_idx], part_length,
+                    &slots[0], n - part_length);
         }
         tail.store(t + n, std::memory_order_release);
         return n;
     }
 
     size_t pop_batch(T* x, size_t n) {
+        return consume_pop_batch(n, [&](const T* p1, size_t n1, const T* p2, size_t n2) {
+            memcpy(x, p1, sizeof(T) * n1); x += n1;
+            if (n2) { memcpy(x, p2, sizeof(T) * n2); }
+        });
+    }
+
+    // Consumer must be callable as consume(const T* offset1, size_t length,
+    //                                      const T* offset2, size_t length)
+    // and consume (read) data directly from the provided buffer.
+    template<typename Consumer>
+    size_t consume_pop_batch(size_t n, Consumer&& consume) {
         auto h = head.load(std::memory_order_relaxed);
         n = std::min(n, tail.load(std::memory_order_acquire) - h);
         if (n == 0) return 0;
         auto first_idx = idx(h);
         auto part_length = Base::capacity - first_idx;
         if (likely(part_length >= n)) {
-            memcpy(x, &slots[first_idx], sizeof(T) * n);
+            consume(&slots[first_idx], n, nullptr, 0);
         } else {
-            if (likely(part_length))
-                memcpy(x, &slots[first_idx], sizeof(T) * (part_length));
-            memcpy(x + part_length, &slots[0], sizeof(T) * (n - part_length));
+            consume(&slots[first_idx], part_length,
+                    &slots[0], n - part_length);
         }
         head.store(h + n, std::memory_order_release);
         return n;
@@ -512,26 +626,183 @@ public:
     }
 };
 
+template <typename T>
+using FlexLockfreeSPSCRingQueue = FlexQueue<T, LockfreeSPSCRingQueue<T, 0>>;
+
 namespace photon {
 namespace common {
+
+/**
+ * @brief A lock-free stack of the park slots of idle (sleeping) consumers.
+ *
+ * A consumer that finds the queue empty publishes a `Slot`, which lives on its
+ * own stack frame, and then sleeps on it. A producer that has just pushed an
+ * item claims one slot and wakes its owner up. Claiming is exclusive *by
+ * construction*: the claimer takes the whole stack with a single `exchange()`,
+ * keeps the top slot and gives the rest back. Hence
+ *   - a wake-up can not accumulate: one push wakes at most one consumer, and a
+ *     published slot can be claimed exactly once, so the number of in-flight
+ *     wake-ups is capped by the number of sleeping consumers -- structurally,
+ *     without any counter to maintain;
+ *   - the stack needs no version tag: unlike a Treiber pop, `exchange()` never
+ *     CAS-es on a slot's `next` field, which is where the ABA hazard would be
+ *     (slots are re-published by their owners, so the same address does come
+ *     back).
+ *
+ * Why no notification can be lost:
+ *   - `publish()` is a seq_cst RMW, and a producer has a seq_cst fence between
+ *     its push and its `idle()` load, so at least one of the two sides sees
+ *     the other (Dekker). The consumer also re-checks the queue right after
+ *     publishing.
+ *   - The owner of a slot never returns from `park()` while the slot is still
+ *     linked into the stack. A claimer therefore never dereferences a dead
+ *     slot, and its `thread_interrupt()` can never hit a thread that has
+ *     already left `park()` and gone on to do something else.
+ *   - A claimer holding the whole stack makes it look empty to everybody else,
+ *     so a concurrent producer may skip its notification. Whoever gives slots
+ *     back is responsible for re-checking the queue afterwards; see
+ *     `RingChannel::notify_recvers()`.
+ */
+class ParkStack {
+public:
+    struct Slot {
+        photon::thread* th = photon::CURRENT;
+        Slot* next = nullptr;
+        std::atomic<uint32_t> st{PARKED};
+        bool interrupted = false;   // a wake-up interrupt was issued to `th`
+    };
+
+    // Is any consumer parked? This is the only load a producer pays for on its
+    // fast path, and the line is read-mostly while consumers are busy.
+    bool idle() const { return top.load(std::memory_order_relaxed) != nullptr; }
+
+    // wake-ups that have been issued but not yet observed by their target
+    uint64_t inflight() const {
+        return _inflight.load(std::memory_order_acquire);
+    }
+
+    void publish(Slot* s) {
+        auto head = top.load(std::memory_order_relaxed);
+        do { s->next = head; }
+        while (!top.compare_exchange_weak(head, s, std::memory_order_seq_cst,
+                                                   std::memory_order_relaxed));
+    }
+
+    // Claims one parked consumer and wakes it up. Returns false if and only if
+    // no slot was published at the moment of the exchange.
+    bool unpark_one() {
+        auto s = top.exchange(nullptr, std::memory_order_seq_cst);
+        if (!s) return false;
+        if (s->next) give_back(s->next);
+        wake(s);
+        return true;
+    }
+
+    // Sleeps until `s`, which must have been published, gets claimed. `on_idle`
+    // is invoked every time the safety-net timeout expires (or an unrelated
+    // thread_interrupt() arrives) without a claim; it must not sleep, because
+    // until the slot is re-armed a claimer still believes we are sleeping.
+    template <typename OnIdle>
+    void park(Slot* s, uint64_t timeout_usec, OnIdle on_idle) {
+        bool consumed = false;      // did we consume the wake-up interrupt?
+        while (s->st.load(std::memory_order_seq_cst) == PARKED) {
+            int r = photon::thread_usleep_defer(timeout_usec, &commit, s);
+            if (r < 0 && errno == -1) consumed = true;
+            if (s->st.load(std::memory_order_seq_cst) != COMMITTED)
+                break;              // claimed, before or while we slept
+            on_idle();
+            uint32_t expect = COMMITTED;     // re-arm and sleep once more
+            if (!s->st.compare_exchange_strong(expect, PARKED,
+                        std::memory_order_seq_cst))
+                break;
+        }
+        // The claimer's last touch of the slot is its CLAIMED store. Wait for
+        // it, or we would let the slot -- a stack frame -- die under its feet.
+        // It is normally already there (a wake-up interrupt costs the claimer a
+        // syscall, and only two instructions follow it), so the first pauses
+        // almost always suffice. If they do not, the claimer is not running on
+        // any CPU, and spinning is then exactly the wrong thing to do: it keeps
+        // a core away from the only thread that can end the wait. Hence the
+        // escalation to sched_yield(), which blocks this vCPU no more than the
+        // spinning already did, and cuts stalls of milliseconds down to
+        // microseconds under CPU pressure.
+        for (uint64_t i = 0; s->st.load(std::memory_order_acquire) != CLAIMED; ++i) {
+            if (i < 64) CPUPause::pause();
+            else if (i < 128) photon::thread_yield();
+            else ThreadPause::pause();
+        }
+        _inflight.fetch_sub(1, std::memory_order_release);
+        // The claimer found us COMMITTED but the safety-net timeout had already
+        // woken us up: its interrupt landed on a running thread and is still
+        // pending. Absorb it here, or it would surface at whatever the caller
+        // of recv() does next. thread_yield() clears the pending error.
+        if (s->interrupted && !consumed) photon::thread_yield();
+    }
+
+protected:
+    enum : uint32_t {
+        PARKED    = 0,  // published, the owner is sleeping or about to
+        COMMITTED = 1,  // the owner is provably asleep: a claim must interrupt
+        CLAIMING  = 2,  // claimed, the claimer is still working on the slot
+        CLAIMED   = 3,  // claimed and released: the owner may return
+    };
+    std::atomic<Slot*> top{nullptr};
+    std::atomic<uint64_t> _inflight{0};
+
+    // Hands a sub-stack back after having taken all of it.
+    void give_back(Slot* first) {
+        Slot* head = nullptr;
+        if (top.compare_exchange_strong(head, first, std::memory_order_seq_cst,
+                                                     std::memory_order_relaxed))
+            return;                 // common case: nobody published meanwhile
+        auto tail = first;
+        while (tail->next) tail = tail->next;
+        do { tail->next = head; }
+        while (!top.compare_exchange_weak(head, first, std::memory_order_seq_cst,
+                                                       std::memory_order_relaxed));
+    }
+
+    // `s` is exclusively ours, as it has been unlinked by the exchange().
+    void wake(Slot* s) {
+        auto th = s->th;    // the slot is unreachable after the hand-off below
+        _inflight.fetch_add(1, std::memory_order_relaxed);
+        if (s->st.exchange(CLAIMING, std::memory_order_seq_cst) == COMMITTED) {
+            // It is provably asleep on this slot. Both stores are still safe:
+            // the owner may not leave park() before our CLAIMED store, and it
+            // reads `interrupted` only after having seen it.
+            s->interrupted = true;
+            photon::thread_interrupt(th, -1);
+        }   // else it is awake and wakes itself up, see commit() below
+        s->st.store(CLAIMED, std::memory_order_release);
+    }
+
+    // Runs right after the owner of `s` has committed itself to sleeping, so
+    // from now on a claimer is allowed to interrupt it.
+    static void commit(void* arg) {
+        auto s = (Slot*)arg;
+        uint32_t expect = PARKED;
+        if (s->st.compare_exchange_strong(expect, COMMITTED,
+                    std::memory_order_seq_cst))
+            return;
+        // Already claimed, and the claimer saw us not committed yet, so nobody
+        // else is going to wake us up.
+        s->interrupted = true;
+        photon::thread_interrupt(s->th, -1);
+    }
+};
 
 /**
  * @brief RingChannel is a photon wrapper to make LockfreeQueue send/recv
  * efficiently wait and spin using photon style sync mechanism.
  *
- * Notification model (multi-producer, multi-consumer safe):
- *   - Each consumer entering the slow path bumps `idler`.
- *   - Each producer, after `push`, may issue at most one `signal(1)` per push,
- *     and only when `pending < idler`. `pending` mirrors the in-flight
- *     `queue_sem.m_count`, so the semaphore counter is hard-capped by the
- *     observed number of idle consumers, never accumulating with burst size.
- *   - A `seq_cst` fence in send() and a `seq_cst` RMW on `idler` in recv()
- *     close the Dekker-style window: at any time at least one of
- *     (consumer sees the push) or (producer signals) must hold, so the queue
- *     can never end up non-empty while every consumer sleeps.
+ * Notification model (multi-producer, multi-consumer safe): a consumer that
+ * runs out of both items and spin budget publishes a park slot and sleeps on
+ * it; a producer that has just pushed an item claims one park slot and wakes
+ * its owner up. See ParkStack for why this neither loses nor accumulates
+ * notifications.
  *
- * Watch out that `recv` should run in photon environment (because it has to)
- * use photon semaphore to be notified that new item has sended. `send` could
+ * Watch out that `recv` should run in photon environment (because it has to
+ * sleep on a park slot to be notified that new item has sended). `send` could
  * running in photon or std::thread environment (needs to set template `Pause`
  * as `ThreadPause`).
  *
@@ -539,16 +810,144 @@ namespace common {
  * LockfreeBatchMPMCRingQueue, or LockfreeSPSCRingQueue, with their own template
  * parameters.
  */
+// Shared send-side backoff logic. Members (send_sem, send_waiters,
+// send_pending) are declared in each channel class; only the logic is shared.
+template <typename T>
+struct SendBackoff {
+    // Wakes one blocked sender up, unless enough wake-ups are already in
+    // flight. The caller must have issued a seq_cst fence after the pop that
+    // freed a queue slot -- hence the name -- so that the load of
+    // `send_waiters` below can not be reordered before it. That is the Dekker
+    // half paired with the seq_cst RMW on `send_waiters` in push_backoff().
+    static void notify_senders_fenced(photon::semaphore& send_sem,
+                               std::atomic<uint64_t>& send_waiters,
+                               std::atomic<uint64_t>& send_pending) {
+        auto cur_waiters = send_waiters.load(std::memory_order_seq_cst);
+        if (cur_waiters == 0) return;
+        auto sp = send_pending.load(std::memory_order_acquire);
+        for (;;) {
+            if (sp >= cur_waiters) {
+                auto fresh = send_waiters.load(std::memory_order_relaxed);
+                if (fresh <= cur_waiters) return;
+                cur_waiters = fresh;
+                continue;
+            }
+            if (send_pending.compare_exchange_weak(sp, sp + 1,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+                send_sem.signal(1);
+                return;
+            }
+        }
+    }
+
+    template <typename Pause = ThreadPause, typename PushFn,
+              typename std::enable_if<std::is_same<Pause, PhotonPause>::value, int>::type = 0>
+    static void push_backoff(const T& x, PushFn push_fn, uint64_t yield_turn, uint64_t yield_usec,
+                             photon::semaphore& send_sem,
+                             std::atomic<uint64_t>& send_waiters,
+                             std::atomic<uint64_t>& send_pending) {
+        if (!push_fn(x)) {
+            send_waiters.fetch_add(1, std::memory_order_seq_cst);
+            DEFER(send_waiters.fetch_sub(1, std::memory_order_seq_cst));
+            Timeout yield_timeout(yield_usec);
+            uint64_t yt = yield_turn;
+            while (!push_fn(x)) {
+                if (yt > 0 && !yield_timeout.expired()) {
+                    yt--;
+                    photon::thread_yield();
+                } else {
+                    // wait for 100ms
+                    int r = send_sem.wait(1, 100UL * 1000);
+                    if (r == 0)
+                        send_pending.fetch_sub(1, std::memory_order_acq_rel);
+                    yt = yield_turn;
+                    yield_timeout.timeout(yield_usec);
+                }
+            }
+        }
+    }
+
+    template <typename Pause = ThreadPause, typename PushFn,
+              typename std::enable_if<std::is_same<Pause, ThreadPause>::value, int>::type = 0>
+    static void push_backoff(const T& x, PushFn push_fn, uint64_t yield_turn, uint64_t yield_usec,
+                             photon::semaphore&,
+                             std::atomic<uint64_t>&,
+                             std::atomic<uint64_t>&) {
+        if (!push_fn(x)) {
+            uint64_t yt = yield_turn;
+            auto deadline = std::chrono::steady_clock::now() +
+                std::chrono::microseconds(yield_usec);
+            while (!push_fn(x)) {
+                if (yt > 0 &&
+                    std::chrono::steady_clock::now() < deadline) {
+                    yt--;
+                    std::this_thread::yield();
+                } else {
+                    std::this_thread::sleep_for(
+                        std::chrono::microseconds(yield_usec));
+                    yt = yield_turn;
+                    deadline = std::chrono::steady_clock::now() +
+                        std::chrono::microseconds(yield_usec);
+                }
+            }
+        }
+    }
+
+    template <typename Pause = ThreadPause, typename PushFn,
+              typename std::enable_if<!std::is_same<Pause, PhotonPause>::value &&
+                                      !std::is_same<Pause, ThreadPause>::value, int>::type = 0>
+    static void push_backoff(const T& x, PushFn push_fn, uint64_t, uint64_t,
+                             photon::semaphore&, std::atomic<uint64_t>&,
+                             std::atomic<uint64_t>&) {
+        while (!push_fn(x)) Pause::pause();
+    }
+};
+
+namespace detail {
+
+// After the queue's initial CPU pauses, let other coroutines make progress.
+struct ChannelPublicationWait {
+    void operator()(uint64_t i) const {
+        if (i < 128) photon::thread_yield();
+        else photon::thread_usleep(50);
+    }
+};
+
+template <typename...>
+struct make_void {
+    using type = void;
+};
+
+// Only queues with publication hooks receive the Channel's wake/wait policy.
+template <typename Q, typename T, typename = void>
+struct has_publication_hook : std::false_type {};
+
+template <typename Q, typename T>
+struct has_publication_hook<
+    Q, T,
+    typename make_void<decltype(std::declval<Q&>().pop(
+        std::declval<T&>(), std::declval<void (*)()>(), ChannelPublicationWait{}))>::type>
+    : std::true_type {};
+
+}  // namespace detail
+
 template <typename QueueType>
 class RingChannel : public QueueType {
 protected:
-    photon::semaphore     queue_sem;
-    std::atomic<uint64_t> idler{0};    // # consumers in idle/wait
-    std::atomic<uint64_t> pending{0};  // mirror of queue_sem.m_count
+    ParkStack             idlers;      // park slots of the idle consumers
+    photon::semaphore     send_sem;
+    std::atomic<uint64_t> send_waiters{0};
+    std::atomic<uint64_t> send_pending{0};
     uint64_t default_yield_turn = 1024;
     uint64_t default_yield_usec = 1024;
+    // Safety net only: a parked consumer wakes itself up this often to
+    // re-check the queue and re-arm its slot. Correctness does not rely on
+    // it, it merely bounds the damage of a hypothetically lost wake-up.
+    uint64_t default_park_usec = 100UL * 1000;
 
     using T = decltype(std::declval<QueueType>().recv());
+    using PublicationHook = detail::has_publication_hook<QueueType, T>;
 
 public:
     using QueueType::empty;
@@ -565,79 +964,214 @@ public:
 
     template <typename Pause = ThreadPause>
     void send(const T& x) {
-        while (!push(x)) {
-            Pause::pause();
-        }
-        // Dekker barrier: ensure the prior push (mark.store release) is
-        // ordered before the following idler load, paired with the seq_cst
-        // RMW on `idler` in recv(). This guarantees that we cannot
-        // simultaneously miss the consumer's idler++ AND have the consumer
-        // miss our push.
-        std::atomic_thread_fence(std::memory_order_seq_cst);
-        auto cur_idler = idler.load(std::memory_order_seq_cst);
-        if (cur_idler == 0) return;
-
-        // Cap pending (== m_count) at cur_idler so a long burst can never
-        // accumulate stale wake-up tokens. Multiple producers may each succeed
-        // up to the observed idler count, preserving fan-out for N consumers.
-        auto p = pending.load(std::memory_order_acquire);
-        for (;;) {
-            if (p >= cur_idler) {
-                auto fresh = idler.load(std::memory_order_relaxed);
-                if (fresh <= cur_idler) return;
-                cur_idler = fresh;
-                continue;
-            }
-            if (pending.compare_exchange_weak(p, p + 1,
-                    std::memory_order_acq_rel,
-                    std::memory_order_acquire)) {
-                queue_sem.signal(1);
-                return;
-            }
-            // CAS failed: `p` was refreshed automatically; retry.
-        }
+        SendBackoff<T>::template push_backoff<Pause>(x, [this](const T& v) { return push(v); },
+                            default_yield_turn, default_yield_usec,
+                            send_sem, send_waiters, send_pending);
+        notify_recvers();
     }
     T recv(uint64_t max_yield_turn, uint64_t max_yield_usec) {
         T x;
-        if (pop(x)) return x;
+        if (pop_with_baton(x, PublicationHook{})) {
+            after_recv();
+            return x;
+        }
         // yield once if failed, so photon::now will be updated
         photon::thread_yield();
-        // seq_cst on idler is the other half of the Dekker barrier (see send).
-        idler.fetch_add(1, std::memory_order_seq_cst);
-        DEFER(idler.fetch_sub(1, std::memory_order_seq_cst));
         Timeout yield_timeout(max_yield_usec);
         uint64_t yield_turn = max_yield_turn;
-        while (!pop(x)) {
+        while (!pop_with_baton(x, PublicationHook{})) {
             if (yield_turn > 0 && !yield_timeout.expired()) {
                 yield_turn--;
                 photon::thread_yield();
             } else {
-                // wait for 100ms
-                int r = queue_sem.wait(1, 100UL * 1000);
-                // r == 0 means we actually consumed one m_count token; mirror
-                // it on `pending`. r < 0 (timeout/interrupt) does not touch
-                // m_count, so we must not touch `pending` either.
-                if (r == 0)
-                    pending.fetch_sub(1, std::memory_order_acq_rel);
+                park();
                 // reset yield mark and set into busy wait
                 yield_turn = max_yield_turn;
                 yield_timeout.timeout(max_yield_usec);
             }
         }
+        after_recv();
         return x;
     }
     T recv() { return recv(default_yield_turn, default_yield_usec); }
 
-    // Diagnostic accessor: returns the current count of in-flight wake-up
-    // tokens (mirrors `queue_sem.m_count`). Tests use this to assert that no
-    // stale signals accumulate across a producer burst.
-    uint64_t notification_pending() const {
-        return pending.load(std::memory_order_acquire);
+    // Diagnostic accessor: wake-ups that have been issued to a parked consumer
+    // but not yet observed by it. Unlike the semaphore counter that it
+    // replaces, this can not accumulate over a producer burst: a park slot is
+    // claimed exactly once, so the count is bounded by the number of parked
+    // consumers, however long the burst is.
+    uint64_t notification_pending() const { return idlers.inflight(); }
+
+protected:
+    bool pop_with_baton(T& x, std::true_type) {
+        return QueueType::pop(x, [this] { notify_recvers(); }, detail::ChannelPublicationWait{});
+    }
+    bool pop_with_baton(T& x, std::false_type) { return QueueType::pop(x); }
+
+    void unpark_if_ready() { if (!empty()) idlers.unpark_one(); }
+
+    // Called by a producer right after its push.
+    void notify_recvers() {
+        // Dekker barrier: order the push before the idle() load below, paired
+        // with the seq_cst RMW on the stack top in ParkStack::publish(). Hence
+        // we can not both miss a parked consumer and be missed by it.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (idlers.idle()) unpark_if_ready();
+    }
+
+    // Called by a consumer right after a successful pop: hand the freed queue
+    // slot to a blocked sender, and pass the baton on if there is still work
+    // and somebody to do it.
+    //
+    // The baton matters because a claimer holds the whole idle stack while it
+    // hands the surplus back, so a producer pushing right then finds nobody
+    // parked and skips its wake-up. Whoever gets woken up is therefore
+    // responsible for re-checking here, and the fence below makes sure it sees
+    // that producer's item. Without it, such an item would still be consumed
+    // -- by us, on our next recv() -- but serially instead of in parallel, and
+    // it would be left in the queue if we happened not to come back for more.
+    void after_recv() {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        SendBackoff<T>::notify_senders_fenced(send_sem, send_waiters, send_pending);
+        if (idlers.idle()) unpark_if_ready();
+    }
+
+    // Publishes a park slot and sleeps on it until a producer claims it.
+    void park() {
+        ParkStack::Slot slot;
+        idlers.publish(&slot);
+        // The consumer half of the Dekker barrier in notify_recvers(): a
+        // producer that has missed our slot can not be missed here. This is
+        // what makes the channel live -- the last consumer to fall asleep is
+        // the one that can not afford to miss an item.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        unpark_if_ready();     // may well claim our own slot, which is fine
+        idlers.park(&slot, default_park_usec, [this] { unpark_if_ready(); });
+    }
+};
+
+// FlexRingChannel: composition-based wrapper for FlexQueue types.
+// Unlike RingChannel (which inherits from QueueType), FlexRingChannel holds
+// a pointer to a dynamically-allocated FlexQueue. This avoids the memory
+// layout conflict where RingChannel's members (park stack, semaphore, etc.)
+// would overlap with the zero-length slots[] array in the base queue class.
+//
+// Usage:
+//   using FlexRing = FlexLockfreeMPMCRingQueue<Delegate<void>>;
+//   auto* ch = FlexRingChannel<FlexRing>::create(1024);
+//   ch->send(task);
+//   auto task = ch->recv();
+//   FlexRingChannel<FlexRing>::destroy(ch);
+template <typename FlexQueueType>
+class FlexRingChannel {
+    FlexQueueType* queue;
+    ParkStack             idlers;      // park slots of the idle consumers
+    photon::semaphore     send_sem;
+    std::atomic<uint64_t> send_waiters{0};
+    std::atomic<uint64_t> send_pending{0};
+    uint64_t default_yield_turn = 1024;
+    uint64_t default_yield_usec = 1024;
+    uint64_t default_park_usec = 100UL * 1000;   // safety net, see RingChannel
+
+    using T = decltype(std::declval<FlexQueueType>().recv());
+    using PublicationHook = detail::has_publication_hook<FlexQueueType, T>;
+
+    FlexRingChannel(FlexQueueType* q, uint64_t yield_turn, uint64_t yield_usec)
+        : queue(q), default_yield_turn(yield_turn),
+          default_yield_usec(yield_usec) {}
+
+public:
+    ~FlexRingChannel() = default;
+
+    FlexRingChannel(const FlexRingChannel&) = delete;
+    FlexRingChannel& operator=(const FlexRingChannel&) = delete;
+
+    static FlexRingChannel* create(size_t capacity,
+                                   uint64_t max_yield_turn = 1024,
+                                   uint64_t max_yield_usec = 1024) {
+        auto q = FlexQueueType::create(capacity);
+        if (!q) return nullptr;
+        return new FlexRingChannel(q, max_yield_turn, max_yield_usec);
+    }
+
+    static void destroy(FlexRingChannel* ch) {
+        if (!ch) return;
+        FlexQueueType::destroy(ch->queue);
+        delete ch;
+    }
+
+    template <typename Pause = ThreadPause>
+    void send(const T& x) {
+        SendBackoff<T>::template push_backoff<Pause>(x, [this](const T& v) { return queue->push(v); },
+                            default_yield_turn, default_yield_usec,
+                            send_sem, send_waiters, send_pending);
+        notify_recvers();
+    }
+
+    T recv(uint64_t max_yield_turn, uint64_t max_yield_usec) {
+        T x;
+        if (pop_with_baton(x, PublicationHook{})) {
+            after_recv();
+            return x;
+        }
+        // yield once if failed, so photon::now will be updated
+        photon::thread_yield();
+        Timeout yield_timeout(max_yield_usec);
+        uint64_t yield_turn = max_yield_turn;
+        while (!pop_with_baton(x, PublicationHook{})) {
+            if (yield_turn > 0 && !yield_timeout.expired()) {
+                yield_turn--;
+                photon::thread_yield();
+            } else {
+                park();
+                // reset yield mark and set into busy wait
+                yield_turn = max_yield_turn;
+                yield_timeout.timeout(max_yield_usec);
+            }
+        }
+        after_recv();
+        return x;
+    }
+
+    T recv() { return recv(default_yield_turn, default_yield_usec); }
+
+    bool empty() const { return queue->empty(); }
+    bool full() const { return queue->full(); }
+    size_t read_available() const { return queue->read_available(); }
+    size_t write_available() const { return queue->write_available(); }
+
+    // Diagnostic accessor: wake-ups that have been issued to a parked consumer
+    // but not yet observed by it; see RingChannel.
+    uint64_t notification_pending() const { return idlers.inflight(); }
+
+protected:
+    bool pop_with_baton(T& x, std::true_type) {
+        return queue->pop(x, [this] { notify_recvers(); }, detail::ChannelPublicationWait{});
+    }
+    bool pop_with_baton(T& x, std::false_type) { return queue->pop(x); }
+
+    void unpark_if_ready() { if (!queue->empty()) idlers.unpark_one(); }
+
+    // See RingChannel for why each of the three is needed and sufficient.
+    void notify_recvers() {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (idlers.idle()) unpark_if_ready();
+    }
+
+    void after_recv() {
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        SendBackoff<T>::notify_senders_fenced(send_sem, send_waiters, send_pending);
+        if (idlers.idle()) unpark_if_ready();
+    }
+
+    void park() {
+        ParkStack::Slot slot;
+        idlers.publish(&slot);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        unpark_if_ready();     // may well claim our own slot, which is fine
+        idlers.park(&slot, default_park_usec, [this] { unpark_if_ready(); });
     }
 };
 
 }  // namespace common
 }  // namespace photon
-
-#undef size_t
-

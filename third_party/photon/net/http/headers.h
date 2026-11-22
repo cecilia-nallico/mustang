@@ -90,7 +90,10 @@ public:
         assert(ret.end() <= m_buf + m_buf_size);
         return ret;
     }
+    // With duplicates enabled, append fields in their original wire order.
+    // The source and destination buffers must be disjoint in that mode.
     int merge(const HeadersBase &h, int allow_dup = 0) {
+        if (allow_dup) return merge_duplicates(h);
         for (auto kv : h)
             if (insert(kv.first, kv.second, allow_dup) < 0)
                 return -1;
@@ -110,12 +113,17 @@ public:
 
     uint16_t kv_size() const { return m_kv_size * sizeof(KV); }
     uint16_t size() const { return m_buf_size; }
+    // the headers as they go on the wire ("K: V\r\n" each, in insertion order),
+    // so that one set of headers can be appended to another's message
+    std::string_view serialized() const;
     size_t space_remain() const {
         return m_buf_capacity - size() - kv_size();
     }
     int reset_host(int delta, std::string_view host);
 
 protected:
+    // Append disjoint source storage in wire order, including duplicate fields.
+    int merge_duplicates(const HeadersBase& source);
     char* m_buf;
     uint16_t m_buf_size = 0, m_kv_size = 0, m_buf_capacity = 0, m_last_kv = 0;
     friend class HeaderAssistant;
@@ -138,11 +146,11 @@ class Headers: public HeadersBase {
 public:
     std::pair<ssize_t, ssize_t> range() const;
     int range(uint64_t from, uint64_t to) {
-        return insert_format("Range", "bytes=%lu-%lu", from, to);
+        return insert_format("Range", "bytes=%llu-%llu", (unsigned long long)from, (unsigned long long)to);
     }
     int content_range(size_t start, size_t end, ssize_t size = -1) {
         auto s = (size == -1 ? "*" : std::to_string(size));
-        return insert_format("Content-Range", "bytes %lu-%lu/%s", start, end, s.c_str());
+        return insert_format("Content-Range", "bytes %llu-%llu/%s", (unsigned long long)start, (unsigned long long)end, s.c_str());
     }
     bool chunked() const {
         return get_value("Transfer-Encoding") == "chunked";
@@ -153,7 +161,7 @@ public:
     }
 
     int content_length(uint64_t cl) {
-        return insert_format("Content-Length", "%lu", cl);
+        return insert_format("Content-Length", "%llu", (unsigned long long)cl);
     }
 };
 

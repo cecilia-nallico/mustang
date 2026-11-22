@@ -17,6 +17,7 @@ limitations under the License.
 #pragma once
 #include <type_traits>
 #include <utility>
+#include <photon/common/utility.h>
 
 // If class A can be enumerable with A::get() and A::next(),
 // then objects of A can be enumerated by the `for` statement
@@ -41,7 +42,7 @@ struct Enumerable
           if (obj && !obj->valid())
             this->obj = nullptr;
         }
-#if __cplusplus < 201703L
+#if __cplusplus < 201703LL
         using R = typename std::result_of<decltype(&T::get)(T)>::type;
 #else
         using R = typename std::invoke_result<decltype(&T::get), T>::type;

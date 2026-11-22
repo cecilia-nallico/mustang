@@ -17,6 +17,7 @@ limitations under the License.
 #include "url.h"
 #include <photon/common/alog.h>
 #include <photon/common/alog-stdstring.h>
+#include <photon/common/utility.h>
 
 namespace photon {
 namespace net {
@@ -39,85 +40,92 @@ void URL::fix_target() {
     }
 }
 
-void URL::from_string(std::string_view url) {
-    DEFER(fix_target(););
-    if (m_tmp_target) {
-        free((void*)m_tmp_target);
-        m_tmp_target = nullptr;
-    }
-    m_url = url.begin();
-    size_t pos = 0;
-    LOG_DEBUG(VALUE(url));
-    m_secure = ((estring_view&) (url)).starts_with(https_url_scheme);
-    // hashtag should be dropped, since it is pure client-side mark
-    url = url.substr(0, url.find_first_of('#'));
-    auto p = url.find("://");
+bool URL::from_string(std::string_view url_) {
+    estring_view url(url_); // [http[s]://]domain.or.ip[:port][/[path[?query]]]
+    m_url = url.data();     // target := /path?query
+    LOG_DEBUG(VALUE(url));  // target and path both start with '/
+    free(m_tmp_target);
+    m_tmp_target = nullptr;
+    DEFER({ // fix the problem that path and target do not start with '/'
+        estring_view t = m_url | m_target;
+        if (t.size() == 0 || t.front() != '/') {
+            m_tmp_target = (char*)malloc(t.size() + 2);
+            m_tmp_target[0] = '/';
+            memcpy(m_tmp_target+1, t.data(), t.size());
+            m_tmp_target[t.size() + 1] = '\0';
+            m_target = rstring_view16(0, t.size()+1);
+            m_path = rstring_view16(0, m_path.size()+1);
+        }
+    });
+
+    m_port = 80;
+    m_secure = false;
+    size_t p = url.find("://");
     if (p != url.npos) {
-        pos += p + 3;
+        auto protocol = url.substr(0, p);
+        if (protocol.icmp("http") == 0) { }
+        else if (protocol.icmp("https") == 0) { m_port = 443; m_secure = true; }
+        else LOG_ERROR_RETURN(EINVAL, false, "invalid protocol: ", protocol);
         url.remove_prefix(p + 3);
     }
+
+    // hashtag should be dropped, since it is pure client-side mark
+    url = url.substr(0, url.find_first_of('#'));
+
+    m_path = m_query = m_target = { };
     // parse user:passwd (RFC 3986 Section 3.2.1): user:passwd@host
     auto at = url.find('@');
     auto slash = url.find('/');
     if (at != url.npos && (slash == url.npos || at < slash)) {
+        uint64_t offset = url.data() - m_url;
         auto userinfo = url.substr(0, at);
         auto colon = userinfo.find(':');
         if (colon != userinfo.npos) {
-            m_user = rstring_view16(pos, colon);
-            m_passwd = rstring_view16(pos + colon + 1, at - colon - 1);
+            m_user = rstring_view16(offset, colon);
+            m_passwd = rstring_view16(offset + colon + 1, at - colon - 1);
         } else {
-            m_user = rstring_view16(pos, at);
-            m_passwd = rstring_view16(pos + at, 0);
+            m_user = rstring_view16(offset, at);
+            m_passwd = rstring_view16(offset + at, 0);
         }
-        pos += at + 1;
         url.remove_prefix(at + 1);
     } else {
         m_user = rstring_view16(0, 0);
         m_passwd = rstring_view16(0, 0);
     }
+
     p = url.find_first_of(":/?");
-    if (p == url.npos) p = url.size();
-    m_host = rstring_view16(pos, p);
-    m_host_port = m_host;
-    pos += p;
-    url.remove_prefix(p);
-    if (url.empty()) {
-        m_port = m_secure ? 443 : 80;
-        m_path = rstring_view16(pos, 0);
-        m_query = rstring_view16(0, 0);
-        m_target = m_path;
-        return;
-    }
-    if (url.front() == ':') {
-        char* endp;
-        auto port = strtol(url.begin() + 1, &endp, 10);
-        auto port_len= endp - url.begin();
-        if (endp != url.begin() + 1) {
-            m_port = port;
-            if (need_optional_port(*this)) m_host_port = rstring_view16(m_host.offset(), m_host.length() + port_len);
-        }
-        pos += port_len;
-        url.remove_prefix(endp - url.begin());
-    } else {
-        m_port = m_secure ? 443 : 80;
-    }
-    if (url.empty()) {
-        m_path = rstring_view16(pos, 0);
-        m_query = rstring_view16(0, 0);
-        m_target = m_path;
-        return;
-    }
-    p = url.find_first_of("?");
+    uint64_t offset = url.data() - m_url;
     if (p == url.npos) {
-        m_path = rstring_view16(pos, url.size());
-        m_query = rstring_view16(0, 0);
-        m_target = m_path;
-        return;
+        m_host = m_host_port = {offset, url.size()};
+        return true;
     }
-    m_path = rstring_view16(pos, p);
-    m_target = rstring_view16(pos, url.size());
-    pos += p+1;
-    m_query = rstring_view16(pos, url.size() - (p + 1));
+    m_host = m_host_port = {offset, p};
+    url.remove_prefix(p);
+    if (url.empty()) return true;
+    if (url.front() == ':') {
+        url.remove_prefix(1); // Skip ':'
+        uint64_t port_val = -1ULL, port_len = url.to_uint64_check(&port_val);
+        if (!port_len || port_val >= 65536)
+            LOG_ERROR_RETURN(EINVAL, false, "invalid port ", url)
+        m_port = static_cast<uint16_t>(port_val);
+        if (need_optional_port(*this))
+            m_host_port.length() += 1 + port_len;
+        url.remove_prefix(port_len);
+    }
+
+    // Parse path and query
+    if (url.empty()) return true;
+    p = url.find_first_of("?");
+    offset = url.data() - m_url;
+    m_target = {offset, url.size()};
+    if (p == url.npos) {
+        m_path = m_target;
+        return true;
+    }
+    m_path = {offset, p};
+    auto query_len = sat_sub(url.size(), p + 1);
+    m_query = {offset + p + 1, query_len};
+    return true;
 }
 
 static bool isunreserved(char c) {

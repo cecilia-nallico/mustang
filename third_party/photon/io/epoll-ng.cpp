@@ -112,7 +112,7 @@ public:
                 if (ret < 0) {
                     ERRNO err;
                     if (err.no == EINTR) continue;
-                    ::usleep(1024L * cool_down_ms);
+                    ::usleep(1024LL * cool_down_ms);
                     if (cool_down_ms > 16)
                         LOG_ERROR_RETURN(err.no, , "epoll_wait() failed ", err);
                     timeout = sat_sub(timeout, cool_down_ms);
@@ -287,6 +287,8 @@ public:
         return n;
     }
     virtual int cancel_wait() override { return eventfd_write(evfd, 1); }
+
+    std::string_view get_engine_name() const override { return "epoll-ng"; }
 
     int wait_for_fd(int fd, uint32_t interests, Timeout timeout) override {
         if (interests == 0) return 0;

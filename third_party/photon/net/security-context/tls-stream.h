@@ -17,15 +17,15 @@ limitations under the License.
 #pragma once
 
 #include <photon/common/object.h>
-
+#include <photon/common/estring.h>
+#include <photon/common/callback.h>
+#include <photon/net/socket.h>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 
 namespace photon {
 namespace net {
-
-class ISocketStream;
-class ISocketServer;
-class ISocketClient;
 
 enum class SecurityRole {
     Client = 1,
@@ -49,8 +49,24 @@ public:
     virtual int set_cert(const char* cert_str) = 0;
     virtual int set_pkey(const char* key_str, const char* passphrase) = 0;
     virtual int set_verify_mode(VerifyMode mode = VerifyMode::NONE) = 0;
+    // set client-side alpn protos in proto-list format
+    virtual int set_alpn_protos(const std::vector<estring_view>& protos) = 0;
+    // set server-side callback to choose proto
+    // return value must be one string_view of the vector
+    virtual int set_alpn_select_cb(
+        Delegate<estring_view, const std::vector<estring_view>&>) = 0;
     virtual int set_ca_cert(const char* ca_cert_str) = 0;
     virtual int set_ca_file(const char* ca_file, const char* ca_path = nullptr) = 0;
+    // Enable or disable binding the peer certificate to the hostname passed to
+    // tls_stream_set_hostname(). Enabled by default; the analogue of curl's
+    // CURLOPT_SSL_VERIFYHOST. Disabling it downgrades tls_stream_set_hostname()
+    // to SNI only, which accepts any certificate a trusted CA has signed,
+    // whoever it was issued to.
+    virtual int set_verify_hostname(bool enable = true) = 0;
+    // Reports the verify mode actually in effect, which is not necessarily the
+    // last value passed to set_verify_mode(): set_ca_cert() and set_ca_file()
+    // turn VerifyMode::PEER on as a side effect.
+    virtual VerifyMode get_verify_mode() = 0;
 };
 
 enum class TLSVersion{
@@ -108,7 +124,47 @@ ISocketServer* new_tls_server(TLSContext* ctx, ISocketServer* base,
 ISocketClient* new_tls_client(TLSContext* ctx, ISocketClient* base,
                               bool ownership = false);
 
-void tls_stream_set_hostname(ISocketStream* stream, const char* hostname);
+/**
+ * @brief Set the hostname a client expects to be talking to.
+ *
+ * Sends DNS hostnames as SNI (IP literals are not sent as SNI), and binds the
+ * peer certificate to the hostname, so that a certificate signed by a trusted
+ * CA but issued to some *other* name is rejected. Both a chain check and this
+ * name check are needed; a chain check alone only proves the certificate is
+ * genuine, not that it belongs to the peer you asked for.
+ *
+ * Must be called before the first read/write on the stream, as the client
+ * handshake is deferred until then.
+ *
+ * The name check is performed by OpenSSL during chain verification, so it
+ * requires VerifyMode::PEER. Requesting a hostname on a context left at
+ * VerifyMode::NONE is refused with EINVAL rather than silently ignored. IP
+ * literals are matched against iPAddress SANs without being sent as SNI;
+ * hostnames are sent as SNI and matched against dNSName SANs (falling back to
+ * the subject CN when the certificate carries no SAN).
+ * A wildcard matches a single label, in the leftmost position only, and may not
+ * cover part of a label (www*.example.com is rejected).
+ *
+ * @param stream a client-side TLS stream
+ * @param hostname the expected hostname, or an IPv4/IPv6 literal
+ * @return 0 on success, -1 on error (errno set). A failure leaves the stream
+ *         unverified; callers should close it rather than continue.
+ */
+int tls_stream_set_hostname(ISocketStream* stream, const char* hostname);
+
+/**
+ * @brief Send a DNS hostname as SNI, without checking the certificate against it.
+ *
+ * The opt-out from tls_stream_set_hostname()'s name check, for callers that
+ * verify the peer identity by other means. SNI only tells the server which
+ * certificate to send; it places no constraint on the one that comes back. IP
+ * literals are not valid SNI host names and are accepted without an SNI extension.
+ *
+ * @return 0 on success, -1 on error (errno set)
+ */
+int tls_stream_set_sni(ISocketStream* stream, const char* hostname);
+
+estring_view tls_stream_get_alpn_selected(ISocketStream* stream);
 
 }  // namespace net
 }  // namespace photon

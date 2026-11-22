@@ -22,7 +22,6 @@ limitations under the License.
 #include <unistd.h>
 
 #include <chrono>
-#include <list>
 #include <thread>
 #include <string>
 
@@ -58,7 +57,7 @@ IPAddr gethostbypeer(IPAddr remote) {
 
     sockaddr_storage s_local;
     socklen_t len = s_local.get_max_socklen();
-    ::getsockname(sockfd, s_local.get_sockaddr(), &len);
+    photon::net::getsockname(sockfd, s_local.get_sockaddr(), &len);
 
     return s_local.to_endpoint().addr;
 }
@@ -72,7 +71,7 @@ IPAddr gethostbypeer(std::string_view domain) {
     return gethostbypeer(remote);
 }
 
-int _gethostbyname(std::string_view name, Callback<IPAddr> append_op) {
+int _gethostbyname(std::string_view name, TempDelegate<int, IPAddr> append_op) {
     if (name.empty()) return -1;
     addrinfo* result = nullptr;
     addrinfo hints = {};
@@ -114,7 +113,9 @@ struct xlator {
     unsigned char c : 6;
     unsigned char d : 6;
 } __attribute__((packed));
+#ifndef _WIN32
 static_assert(sizeof(xlator) == 4, "...");
+#endif
 
 inline __attribute__((always_inline))
 void base64_translate_3to4(const char *in, char *out)  {
@@ -302,15 +303,13 @@ protected:
             }
             return addrs.release();
         };
-        auto ips = dnscache_.borrow(host, ctr, 1UL * 1000);
+        auto ips = dnscache_.borrow(host, ctr, 1ULL * 1000);
         if (!ips || ips->empty()) {
             ips.recycle(true);
             LOG_ERRNO_RETURN(0, IPAddr(), "Domain resolution for '`' failed", host);
         }
         SCOPED_LOCK(*ips);
-        auto ret = ips->front();
-        ips->node = ret->next();  // access in round robin order
-        return ret->addr;
+        return ips->round_robin_next()->addr;
     }
 
 public:

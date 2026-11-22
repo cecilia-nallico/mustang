@@ -68,9 +68,9 @@ namespace rpc
         T* end() const { return begin() + size(); }
         const T* cbegin() const { return begin(); }
         const T* cend() const { return end(); }
-        const T& operator[](long i) const { return ((T*)_ptr)[i]; }
+        const T& operator[](int64_t i) const { return ((T*)_ptr)[i]; }
         const T& front() const    { return (*this)[0]; }
-        const T& back() const     { return (*this)[(long)size() - 1]; }
+        const T& back() const     { return (*this)[(int64_t)size() - 1]; }
         bool empty() const { return _len == 0; }
         void assign(const T* x, size_t size) { buffer::assign(x, sizeof(*x) * size); }
         void assign(const std::vector<T>& vec) { assign(&vec[0], vec.size()); }
@@ -506,6 +506,7 @@ namespace rpc
                 iov.push_back(s.addr(), s.size());
                 DeserializerIOV deserializer;
                 auto* t = deserializer.deserialize<V>(&iov);
+                if (!t) return;  // deserialize failed (e.g. truncated/corrupt input)
 
                 m_pair.first = m_ptr->first | *m_base_buffer;
                 m_pair.second = *t;

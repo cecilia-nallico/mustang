@@ -92,6 +92,15 @@ public:
     ssize_t write_stream(IStream *stream, size_t size_limit = -1);
     int close() override { return 0; }
 
+    // Release ownership of socket stream and return it (like unique_ptr::release)
+    // After this call, the Message no longer owns or references the socket
+    net::ISocketStream* steal_socket_stream() {
+        auto* s = m_stream;
+        m_stream = nullptr;
+        m_stream_ownership = false;
+        return s;
+    }
+
     // size of body: infer from Content-Range/Content-Length in response header
     size_t body_size() const;
     // size of origin resource: infer from Content-Range/Content-Length in response header
@@ -112,7 +121,7 @@ protected:
     // return 0 if header recvd
     // return 1 if end of stream
     // return negative if an error occured
-    int receive_header(uint64_t timeout = -1UL);
+    int receive_header(uint64_t timeout = -1ULL);
     int send_header(net::ISocketStream* stream = nullptr);
     // return 0 if whole header recvd
     // return 1 if end of stream
@@ -144,6 +153,7 @@ protected:
 
     friend class HTTPServerImpl;
     friend class ClientImpl;
+    friend class ConnectTunnelDialer;   // sends the CONNECT of a tunnel
 };
 
 class URL;
@@ -200,6 +210,9 @@ public:
         return m_stream;
     }
 protected:
+    // Initialize a per-hop outgoing message from caller configuration. Headers
+    // are composed separately, after route and proxy authentication decisions.
+    int copy_request_line(const Request& source);
     int parse_request_line(Parser &p);
     int parse_start_line(Parser &p) override {
         return parse_request_line(p);
@@ -209,6 +222,7 @@ protected:
     rstring_view16 m_target, m_path, m_query;
     uint16_t m_port = 80;
     bool m_secure = false;
+    friend class ClientImpl;
 };
 
 class Response : public Message {

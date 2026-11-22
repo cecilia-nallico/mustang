@@ -266,7 +266,7 @@ public:
 };
 
 
-template<typename NodeType>
+template<typename NodeType, bool AssertAtDestruction = true>
 class intrusive_list
 {
 public:
@@ -277,7 +277,7 @@ public:
     {   // node (NodeType*) MUST be intrusive_list_node<T>, which
         // should be implicitly convertible to __intrusive_list_node*
         __intrusive_list_node* __node = node;
-        assert(__node == nullptr);
+        if (AssertAtDestruction) assert(__node == nullptr);
         _unused(__node);
     }
     void push_back(NodeType* ptr)
@@ -358,7 +358,7 @@ public:
     {
         return node;
     }
-    bool empty()
+    bool empty() const
     {
         return node == nullptr;
     }
@@ -430,17 +430,34 @@ public:
         }
         return split_front_exclusive(first_not_fit);
     }
-    void delete_all()
+    size_t delete_all()
     {
         auto ptr = node;
+        size_t n = 0;
         if (ptr) {
             do {
                 auto next = ptr->next();
-                delete ptr;
+                delete ptr; n++;
                 ptr = next;
             } while (ptr != node);
         }
         node = nullptr;
+        return n;
+    }
+    NodeType* round_robin_next() {
+        auto x = node;
+        node = node->next();
+        return x;
+    }
+    NodeType* round_robin_prev() {
+        auto x = node;
+        node = node->prev();
+        return x;
+    }
+    size_t count_by_loop() const {
+        size_t n = 0;
+        for (auto x: (intrusive_list&)*this) (void)x, ++n;
+        return n;
     }
 };
 

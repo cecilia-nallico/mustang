@@ -22,6 +22,9 @@ limitations under the License.
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#ifndef ESHUTDOWN
+#define ESHUTDOWN 108
+#endif
 #include <type_traits>
 #ifndef __aarch64__
 #include <emmintrin.h>
@@ -65,6 +68,12 @@ namespace photon
     thread* thread_create(thread_entry start, void* arg,
         uint64_t stack_size = DEFAULT_STACK_SIZE,
         uint32_t reserved_space = 0, uint64_t flags = 0);
+    inline thread* thread_create(Delegate<void*> start,
+        uint64_t stack_size = DEFAULT_STACK_SIZE,
+        uint32_t reserved_space = 0, uint64_t flags = 0) {
+            return thread_create(start._func, start._obj,
+                    stack_size, reserved_space, flags);
+    }
 
     // get the address of reserved space, which is right below the thread struct.
     template<typename T = void> inline
@@ -104,6 +113,9 @@ namespace photon
     // after this photon thread fall in sleep. The defer function should NEVER fall into sleep!
     typedef void (*defer_func)(void*);
     int thread_usleep_defer(Timeout timeout, defer_func defer, void* defer_arg=nullptr);
+    inline int thread_usleep_defer(Timeout timeout, TempDelegate<void> defer) {
+        return thread_usleep_defer(timeout, defer._func, defer._obj);
+    }
 
     inline int thread_sleep(uint64_t seconds)
     {
@@ -170,7 +182,16 @@ namespace photon
         return (vcpu_base*)vcpu;
     }
 
-    uint32_t get_vcpu_num();
+    const static uint64_t INFO_THREAD_NUM = 0x0;  // runnable + sleeping
+    const static uint64_t INFO_RUNNABLE_THREAD_NUM = 0x1; // ready + running + standby
+    const static uint64_t INFO_STANDBY_THREAD_NUM = 0x2;
+    const static uint64_t INFO_SLEEPING_THREAD_NUM = 0x3;
+    const static uint64_t INFO_VCPU_NUM = 0x100;
+    uint64_t get_info(uint64_t type, vcpu_base* vcpu = nullptr);
+
+    inline uint32_t get_vcpu_num() {
+        return (uint32_t)get_info(INFO_VCPU_NUM);
+    }
 
     /**
      * @brief Clear unused stack.
@@ -200,13 +221,22 @@ namespace photon
 #endif
     }
 
+    inline void spin_wait_n(uint32_t n) {
+        for (uint32_t i = 0; i < n; ++i) {
+            spin_wait();
+        }
+    }
+
     class spinlock {
     public:
         int lock() {
+            uint32_t delay = 1;
+            constexpr uint32_t max_delay = 1024;
             while (unlikely(xchg())) {
-                while (likely(load())) {
-                    spin_wait();
-                }
+                do {
+                    spin_wait_n(delay);
+                    if (delay < max_delay) delay <<= 1;
+                } while (likely(load()));
             }
             return 0;
         }
@@ -230,6 +260,19 @@ namespace photon
         }
     };
 
+    class qspinlock {
+    public:
+        int try_lock();
+        int lock();
+        bool locked() const {
+            return _owner_tail.load(std::memory_order_acquire);
+        }
+        void unlock();
+    protected:
+        struct holder;
+        std::atomic<holder*> _owner_tail { nullptr };
+    };
+
     class ticket_spinlock {
     public:
         int lock();
@@ -245,6 +288,9 @@ namespace photon
     protected:
         int wait(Timeout timeout = {});
         int wait_defer(Timeout Timeout, void(*defer)(void*), void* arg);
+        int wait_defer(Timeout timeout, Delegate<void> defer) {
+            return wait_defer(timeout, defer._func, defer._obj);
+        }
         void resume(thread* th, int error_number = -1);  // `th` must be waiting in this waitq!
         int resume_all(int error_number = -1);
         thread* resume_one(int error_number = -1);
@@ -266,9 +312,11 @@ namespace photon
     class mutex : protected waitq
     {
     public:
-        mutex(uint16_t max_retries = 100) : retries(max_retries) { }
+        mutex(uint16_t max_retries = 100, bool contending = false)
+            : retries(max_retries), _contending(contending) { }
         int lock(Timeout timeout = {});
         int try_lock();
+        bool locked() { return owner; }
         void unlock();
         ~mutex()
         {
@@ -279,6 +327,7 @@ namespace photon
         std::atomic<thread*> owner{nullptr};
         uint16_t retries;
         spinlock splock;
+        bool _contending;
     };
 
     class seq_mutex : protected mutex {
@@ -296,6 +345,14 @@ namespace photon
     protected:
         int32_t recursive_count = 0;
     };
+
+    template<typename LOCK>
+    inline int thread_usleep_unlocked(Timeout timeout, LOCK& lock) {
+        assert(lock.locked());
+        int r = thread_usleep_defer(timeout, {&lock, &LOCK::unlock});
+        lock.lock();
+        return r;
+    }
 
     template <typename M>
     class locker
@@ -474,6 +531,35 @@ namespace photon
         void try_resume(uint64_t count);
     };
 
+    // one-shot semaphore
+    class disposable_semaphore {
+    public:
+        int wait(Timeout timeout) {
+            uint64_t th = 0, current = (uint64_t)CURRENT;
+            assert(current && !(current & 1));
+            if (!_waiter.compare_exchange_strong(th, current)) {
+                assert(th == 0x1);
+                return 0;
+            }
+            int ret = thread_usleep_defer(timeout, &defer, this);
+            if (likely(ret < 0)) { assert(errno == -1); return 0; }
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        void signal() {
+            auto th = _waiter.fetch_or(0x1);
+            if (!th) { } // first signal (async op completion) before the CAS, AKA _waiter.compare_exchange_strong()
+            else if (!(th&1)) { } // first signal after the CAS, either async op completion or usleep defer
+            else { assert((th>>1) && (th&1)); // second signal()
+                thread_interrupt((thread*)(th&~1), -1);
+            }
+        }
+
+    protected:
+        std::atomic<uint64_t> _waiter{0};
+        static void defer(void* arg);
+    };
+
     // to be different to timer flags
     // mark flag should be larger than 999, and not touch lower bits
     // here we selected
@@ -522,6 +608,118 @@ namespace photon
         bool m_locked;
     };
 
+    // High-performance rwlock without starvation prevention.
+    // Optimized for read-heavy workloads using lock-free atomic operations
+    // for the read lock fast path.
+    class qrwlock {
+    protected:
+        constexpr static int64_t MAX_SHARED_LOCK_COUNT = 1 << 16;
+        constexpr static int64_t WRITE_LOCKED = -1;
+
+        // State encoding:
+        //   state > 0  : number of active readers
+        //   state == 0 : unlocked
+        //   state == -1: write-locked
+
+        std::atomic<int64_t> lock_state{0};
+        photon::condition_variable cv_shared;
+        photon::condition_variable cv_unique;
+        photon::spinlock spin;
+
+        // Must be called with spinlock held.
+        void try_wake() {
+            if (!cv_unique.notify_one()) {
+                cv_shared.notify_all();
+            }
+        }
+
+        // Common blocking lock pattern: fast-path try, then slow-path wait
+        // loop. try_fn must be safe to call both with and without spinlock
+        // held.
+        template <typename TryFunc>
+        int do_lock(TryFunc&& try_fn, photon::condition_variable& cv,
+                    Timeout timeout) {
+            if (try_fn()) return 0;
+            SCOPED_LOCK(spin);
+            while (true) {
+                if (try_fn()) return 0;
+                int ret = cv.wait(spin, timeout);
+                if (ret < 0) {
+                    return -1;
+                }
+            }
+        }
+
+        void __unlock_unique() {
+            SCOPED_LOCK(spin);
+            assert(lock_state.load(std::memory_order_relaxed) == WRITE_LOCKED);
+            lock_state.store(0, std::memory_order_release);
+            try_wake();
+        }
+
+        void __unlock_shared() {
+            auto prev = lock_state.fetch_sub(1, std::memory_order_acq_rel);
+            assert(prev > 0);  // prev<=0 indicates misuse
+            if (prev == 1) {
+                SCOPED_LOCK(spin);
+                try_wake();
+            }
+        }
+
+        bool __trylock() {
+            int64_t expected = 0;
+            return lock_state.compare_exchange_strong(
+                expected, WRITE_LOCKED, std::memory_order_acq_rel,
+                std::memory_order_relaxed);
+        }
+
+        bool __trylock_shared() {
+            auto state = lock_state.load(std::memory_order_acquire);
+            while (state >= 0 && state < MAX_SHARED_LOCK_COUNT) {
+                if (lock_state.compare_exchange_weak(state, state + 1,
+                                                     std::memory_order_acq_rel,
+                                                     std::memory_order_acquire))
+                    return true;
+            }
+            return false;
+        }
+
+    public:
+        qrwlock() = default;
+        qrwlock(const qrwlock&) = delete;
+        qrwlock& operator=(const qrwlock&) = delete;
+
+        int try_lock(int mode) {
+            if (mode == WLOCK)
+                return __trylock() ? 0 : -1;
+            else
+                return __trylock_shared() ? 0 : -1;
+        }
+
+        int lock(int mode, Timeout timeout = {}) {
+            if (mode == WLOCK)
+                return do_lock([this] { return __trylock(); }, cv_unique,
+                               timeout);
+            else
+                return do_lock([this] { return __trylock_shared(); }, cv_shared,
+                               timeout);
+        }
+
+        int unlock() {
+            auto cur_state = lock_state.load(std::memory_order_acquire);
+            if (cur_state == 0) {
+                errno = ENOLCK;
+                return -1;
+            }
+            if (cur_state == WRITE_LOCKED) {
+                __unlock_unique();
+            } else {
+                __unlock_shared();
+            }
+            return 0;
+        }
+    };
+
     // create `n` threads to run `start(arg)`, then get joined;
     // returns the number of threads actually created (< n if
     // thread_create() failed partway), which is the number joined.
@@ -560,7 +758,7 @@ namespace photon
 */
 #define WITH_LOCK(mutex) if (auto __lock__ = scoped_lock(mutex))
 
-#define SCOPE_MAKESURE_YIELD                                               \
-    uint64_t __swc_##__LINE__ = get_vcpu(photon::CURRENT)->switch_count;   \
-    DEFER(if (__swc_##__LINE__ == get_vcpu(photon::CURRENT)->switch_count) \
-              photon::thread_yield(););
+#define SCOPE_MAKESURE_YIELD                                                              \
+    uint64_t _CONCAT(__swc__, __LINE__) = get_vcpu(photon::CURRENT)->switch_count;        \
+    DEFER(({if (_CONCAT(__swc__, __LINE__) == get_vcpu(photon::CURRENT)->switch_count)    \
+              photon::thread_yield();}))

@@ -16,6 +16,7 @@ limitations under the License.
 
 #pragma once
 #include <sys/types.h>
+#include <photon/common/string_view.h>   // std::string_view, incl. the pre-C++17 alias
 #include <photon/photon.h>
 #include <photon/thread/thread.h>
 #include <photon/common/timeout.h>
@@ -71,6 +72,23 @@ public:
     virtual ssize_t wait_and_fire_events(uint64_t timeout) = 0;
 
     virtual int cancel_wait() = 0;
+
+    // A short name for this engine: what it is called in a log, and what two
+    // vcpus' engines are compared by. Only the engine itself knows what it is --
+    // init() walks a recommended order and keeps the first engine that
+    // initializes, so the mask a caller passed does not say what ended up
+    // running. The empty name means no engine at all, which is what a vcpu with
+    // no master engine installed answers.
+    //
+    // The name identifies the engine's kind rather than an instance, so it must
+    // not depend on this object's lifetime: a caller may hold the view after the
+    // engine is gone.
+    //
+    // Pure virtual on purpose. A default would let a new engine silently inherit a
+    // guess -- and the guess is the whole answer here, so a wrong one is a vcpu
+    // that gets trusted when it should be refused. Making every engine answer turns
+    // that into a compile error.
+    virtual std::string_view get_engine_name() const = 0;
 };
 
 inline int wait_for_fd_readable(int fd, Timeout timeout = {}) {
@@ -139,13 +157,22 @@ DECLARE_MASTER_AND_CASCADING_ENGINE(select);
 // DECLARE_MASTER_AND_CASCADING_ENGINE(iouring);
 DECLARE_MASTER_AND_CASCADING_ENGINE(kqueue);
 DECLARE_MASTER_AND_CASCADING_ENGINE(epoll_ng);
+DECLARE_MASTER_AND_CASCADING_ENGINE(iocp);
 
 struct iouring_args {
     bool is_master    = true;
     bool setup_sqpoll = false;
     bool setup_sq_aff = false;
     bool setup_iopoll = false;
-    uint32_t sq_thread_cpu;
+    bool setup_sqe128 = false;    // 128-byte SQEs: uring_cmd payloads beyond 16B (e.g. ublk control)
+    bool eager_submit = false;
+    bool register_files = true;   // sparse fixed-file table; a dedicated ring can skip it
+    uint32_t queue_depth = 0;     // SQ entries to request; 0 = the built-in default
+    uint32_t sq_thread_cpu = 0;   // SQ_AFF only: 0 = CPU 0. Defaulted like every
+                                  // other field here -- init() copies it into
+                                  // params.sq_thread_cpu whenever setup_sq_aff is
+                                  // set, so an unset one used to be an
+                                  // indeterminate read.
     uint32_t sq_thread_idle_ms = 1000;     // by default polls for 1s
 };
 
@@ -184,6 +211,10 @@ new_master_event_engine(uint64_t master_engine, const Ts&...xs) {
         case INIT_EVENT_KQUEUE:
             return new_kqueue_master_engine(xs...);
 #endif
+#ifdef _WIN32
+        case INIT_EVENT_IOCP:
+            return new_iocp_master_engine(xs...);
+#endif
         default:
             return nullptr;
     }
@@ -207,6 +238,8 @@ inline int fd_events_fini() {
 inline CascadingEventEngine* new_default_cascading_engine() {
 #ifdef __APPLE__
     return new_kqueue_cascading_engine();
+#elif defined(_WIN32)
+    return new_iocp_cascading_engine();
 #else
     return new_epoll_cascading_engine();
 #endif

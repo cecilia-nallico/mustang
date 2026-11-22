@@ -22,6 +22,7 @@ limitations under the License.
 #include <photon/thread/thread.h>
 
 #include <algorithm>
+#include <cassert>
 #include <future>
 #include <random>
 #include <thread>
@@ -31,20 +32,23 @@ namespace photon {
 
 class WorkPool::impl {
 public:
-    static constexpr uint32_t RING_SIZE = 65536;
-    static constexpr uint64_t QUEUE_YIELD_COUNT = 256;
-    static constexpr uint64_t QUEUE_YIELD_US = 1024;
+    using FlexRing = FlexLockfreeMPMCRingQueue<Delegate<void>>;
+    using FlexRingChannel = common::FlexRingChannel<FlexRing>;
 
     photon::spinlock worker_lock;
     std::vector<std::thread> owned_std_threads;
     std::vector<photon::vcpu_base *> vcpus;
     std::atomic<uint64_t> vcpu_index{0};
-    photon::common::RingChannel<
-        LockfreeMPMCRingQueue<Delegate<void>, RING_SIZE>>
-        ring;
+    FlexRingChannel* ring;
     int mode;
 
-    impl(size_t vcpu_num, int ev_engine, int io_engine, int mode) : mode(mode) {
+    impl(size_t vcpu_num, int ev_engine, int io_engine, int mode, size_t ring_size,
+         uint64_t queue_yield_count, uint64_t queue_yield_us)
+        : mode(mode) {
+        assert(ring_size > 0 && "workpool ring_size must be > 0");
+        ring = FlexRingChannel::create(ring_size, queue_yield_count, queue_yield_us);
+        if (!ring) abort();
+        vcpus.reserve(vcpu_num);
         for (size_t i = 0; i < vcpu_num; ++i) {
             owned_std_threads.emplace_back(
                 &WorkPool::impl::worker_thread_routine, this, ev_engine,
@@ -53,22 +57,27 @@ public:
         ready_vcpu.wait(vcpu_num);
     }
 
-    ~impl() { // avoid depending on photon to make it destructible wihout photon
+    ~impl() {
         for (auto num = vcpus.size(); num; --num) enqueue({});
         for (auto &worker : owned_std_threads) worker.join();
-        while (vcpus.size()) std::this_thread::yield();
+        if (likely(CURRENT)) {
+            while (vcpus.size()) thread_yield();
+        } else {
+            while (vcpus.size()) std::this_thread::yield();
+        }
         worker_lock.lock();
+        FlexRingChannel::destroy(ring);
     }
 
     void enqueue(Delegate<void> call, AutoContext = {}) {
-        if (likely(CURRENT)) ring.send<PhotonPause>(call);
-        else                 ring.send<ThreadPause>(call);
+        if (likely(CURRENT)) ring->send<PhotonPause>(call);
+        else                 ring->send<ThreadPause>(call);
     }
     void enqueue(Delegate<void> call, StdContext) {
-        ring.send<ThreadPause>(call);
+        ring->send<ThreadPause>(call);
     }
     void enqueue(Delegate<void> call, PhotonContext) {
-        ring.send<PhotonPause>(call);
+        ring->send<PhotonPause>(call);
     }
     template <typename Context>
     void do_call(Delegate<void> call) {
@@ -117,8 +126,12 @@ public:
         DEFER(if (pool) delete_thread_pool(pool));
         ready_vcpu.signal(1);
         for (;;) {
-            auto yc = running_tasks ? 0 : QUEUE_YIELD_COUNT;
-            auto task = ring.recv(yc, QUEUE_YIELD_US);
+            // Spin for a bounded window (count + time) before parking, even
+            // while tasks are in flight: those tasks may be blocked on IO,
+            // leaving this vcpu free to pick up the next task with a short
+            // cooperative spin instead of paying a cross-vcpu wake-up. The
+            // window is bounded, so a genuinely idle worker still parks.
+            auto task = ring->recv();
             if (!task) break;
             running_tasks = running_tasks + 1; // ++ -- are deprecated for volatile in C++20
             TaskLB tasklb{task, &running_tasks};
@@ -127,7 +140,8 @@ public:
             } else {
                 auto th = !pool ? thread_create(&delegate_helper, &tasklb) :
                            pool-> thread_create(&delegate_helper, &tasklb) ;
-                // yield to th so as to copy tasklb to th's stack
+                // Once yield the current coroutine, the newly created coroutine will always
+                // be scheduled before the current coroutine. tasklb will not be overwritten.
                 photon::thread_yield_to(th);
             }
         }
@@ -191,8 +205,10 @@ private:
     StdSemaphore ready_vcpu;
 };
 
-WorkPool::WorkPool(size_t vcpu_num, int ev_engine, int io_engine, int mode)
-    : pImpl(new impl(vcpu_num, ev_engine, io_engine, mode)) {}
+WorkPool::WorkPool(size_t vcpu_num, int ev_engine, int io_engine, int mode, size_t ring_size,
+                   uint64_t queue_yield_count, uint64_t queue_yield_us)
+    : pImpl(new impl(vcpu_num, ev_engine, io_engine, mode, ring_size, queue_yield_count,
+                     queue_yield_us)) {}
 
 WorkPool::~WorkPool() { /* implicitly delete pImpl */}
 

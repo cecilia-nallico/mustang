@@ -18,6 +18,7 @@ limitations under the License.
 #include <cinttypes>
 #include <sys/uio.h>
 #include <stdlib.h>
+#include <sys/fcntl.h>
 #include <fcntl.h>
 #include <photon/fs/filesystem.h>
 #include <photon/fs/cache/pool_store.h>

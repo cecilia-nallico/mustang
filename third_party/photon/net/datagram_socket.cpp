@@ -29,8 +29,8 @@ limitations under the License.
 namespace photon {
 namespace net {
 
-constexpr static size_t MAX_UDP_MESSAGE_SIZE = 65507UL;
-constexpr static size_t MAX_UDS_MESSAGE_SIZE = 207UL * 1024;
+constexpr static size_t MAX_UDP_MESSAGE_SIZE = 65507ULL;
+constexpr static size_t MAX_UDS_MESSAGE_SIZE = 207ULL * 1024;
 
 class DatagramSocketBase : public IDatagramSocket {
 protected:
@@ -49,15 +49,8 @@ public:
 
     int init(int nfd) {
         auto AF = fd;
-#ifndef __APPLE__
         constexpr static auto FLAG = SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC;
-#else
-        constexpr static auto FLAG = SOCK_DGRAM;
-#endif
-        fd = (nfd >= 0) ? nfd : (::socket(AF, FLAG, 0));
-#ifdef __APPLE__
-        set_fd_nonblocking(fd);
-#endif
+        fd = (nfd >= 0) ? nfd : (socket(AF, FLAG, 0));
         return fd < 0;
     }
 
@@ -72,7 +65,7 @@ public:
     virtual uint64_t max_message_size() override { return m_max_msg_size; }
 
     int do_connect(const sockaddr_storage* s) {
-        return DOIO_ONCE(::connect(fd, s->get_sockaddr(), s->get_socklen()), wait_for_fd_writable(fd));
+        return DOIO_ONCE(::connect(fd, s->get_sockaddr(), s->get_socklen()), wait_for_fd_writable(fd, m_timeout));
     }
 
     int do_bind(const sockaddr_storage* s) {
@@ -91,7 +84,7 @@ public:
             .msg_flags = 0,
         };
         return DOIO_ONCE(::sendmsg(fd, &hdr, MSG_DONTWAIT | flags),
-                     wait_for_fd_writable(fd));
+                     wait_for_fd_writable(fd, m_timeout));
     }
     ssize_t do_recv(const iovec* iov, int iovcnt, sockaddr* addr,
                     size_t* addrlen, int flags) {
@@ -105,7 +98,7 @@ public:
             .msg_flags = 0,
         };
         auto ret = DOIO_ONCE(::recvmsg(fd, &hdr, MSG_DONTWAIT | flags),
-                         wait_for_fd_readable(fd));
+                         wait_for_fd_readable(fd, m_timeout));
         if (addrlen) *addrlen = hdr.msg_namelen;
         return ret;
     }
@@ -114,11 +107,11 @@ public:
     }
     virtual int setsockopt(int level, int option_name, const void* option_value,
                            socklen_t option_len) override {
-        return ::setsockopt(fd, level, option_name, option_value, option_len);
+        return photon::net::setsockopt(fd, level, option_name, option_value, option_len);
     };
     virtual int getsockopt(int level, int option_name, void* option_value,
                            socklen_t* option_len) override {
-        return ::getsockopt(fd, level, option_name, option_value, option_len);
+        return photon::net::getsockopt(fd, level, option_name, option_value, option_len);
     }
     // get/set timeout, in us, (default +∞)
     virtual uint64_t timeout() const override { return m_timeout; }

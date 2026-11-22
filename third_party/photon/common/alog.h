@@ -23,10 +23,33 @@ limitations under the License.
 #include <ctime>
 #include <utility>
 #include <type_traits>
+#include <tuple>
 
 #include <photon/common/utility.h>
 #include <photon/common/conststr.h>
 #include <photon/common/retval.h>
+
+#define DEFINE_ALOG_COLOR(code, symbol) \
+const unsigned char symbol = 0x##code;
+DEFINE_ALOG_COLOR(30, ALOG_COLOR_BLACK);
+DEFINE_ALOG_COLOR(31, ALOG_COLOR_RED);
+DEFINE_ALOG_COLOR(32, ALOG_COLOR_GREEN);
+DEFINE_ALOG_COLOR(33, ALOG_COLOR_YELLOW);
+DEFINE_ALOG_COLOR(34, ALOG_COLOR_BLUE);
+DEFINE_ALOG_COLOR(35, ALOG_COLOR_MAGENTA);
+DEFINE_ALOG_COLOR(36, ALOG_COLOR_CYAN);
+DEFINE_ALOG_COLOR(37, ALOG_COLOR_LIGHTGRAY);
+DEFINE_ALOG_COLOR(90, ALOG_COLOR_DARKGRAY);
+DEFINE_ALOG_COLOR(91, ALOG_COLOR_LIGHTRED);
+DEFINE_ALOG_COLOR(92, ALOG_COLOR_LIGHTGREEN);
+DEFINE_ALOG_COLOR(93, ALOG_COLOR_LIGHTYELLOW);
+DEFINE_ALOG_COLOR(94, ALOG_COLOR_LIGHTBLUE);
+DEFINE_ALOG_COLOR(95, ALOG_COLOR_LIGHTMAGENTA);
+DEFINE_ALOG_COLOR(96, ALOG_COLOR_LIGHTCYAN);
+DEFINE_ALOG_COLOR(97, ALOG_COLOR_LIGHTWHITE);
+DEFINE_ALOG_COLOR(00, ALOG_COLOR_NOTHING);
+#undef DEFINE_ALOG_COLOR
+
 
 class ILogOutput {
 protected:
@@ -37,9 +60,12 @@ protected:
 public:
     virtual void write(int level, const char* begin, const char* end) = 0;
     virtual int get_log_file_fd() = 0;
-    virtual uint64_t set_throttle(uint64_t t = -1UL) = 0;
+    virtual uint64_t set_throttle(uint64_t t = -1ULL) = 0;
     virtual uint64_t get_throttle() = 0;
     virtual void destruct() = 0;
+    virtual int set_level_color(int level, unsigned char code) { return 0; /* ignored by default */ }
+    void preset_color();
+    void clear_color();
 };
 
 extern ILogOutput * const log_output_null;
@@ -47,14 +73,14 @@ extern ILogOutput * const log_output_stderr;
 extern ILogOutput * const log_output_stdout;
 
 ILogOutput* new_log_output_file(const char* fn, uint64_t rotate_limit = UINT64_MAX, int max_log_files = 10,
-                                uint64_t throttle = -1UL, bool rotate_on_start = false);
-ILogOutput* new_log_output_file(int fd, uint64_t throttle = -1UL);
-ILogOutput* new_async_log_output(ILogOutput* output);
+                                uint64_t throttle = -1ULL, bool rotate_on_start = false);
+ILogOutput* new_log_output_file(int fd, uint64_t throttle = -1ULL);
+ILogOutput* new_async_log_output(ILogOutput* output, int num_of_queues = 1);
 
 // old-style log_output_file & log_output_file_close
 // return 0 when successed, -1 for failed
-int log_output_file(int fd, uint64_t rotate_limit = UINT64_MAX, uint64_t throttle = -1UL);
-int log_output_file(const char* fn, uint64_t rotate_limit = UINT64_MAX, int max_log_files = 10, uint64_t throttle = -1UL);
+int log_output_file(int fd, uint64_t rotate_limit = UINT64_MAX, uint64_t throttle = -1ULL);
+int log_output_file(const char* fn, uint64_t rotate_limit = UINT64_MAX, int max_log_files = 10, uint64_t throttle = -1ULL);
 int log_output_file_close();
 
 #ifndef LOG_BUFFER_SIZE
@@ -210,6 +236,25 @@ struct ALogBuffer
 #define ALOG_TEMP  5
 #define ALOG_AUDIT 6
 
+inline void ILogOutput::preset_color() {
+    set_level_color(ALOG_DEBUG, ALOG_COLOR_DARKGRAY);
+    set_level_color(ALOG_INFO, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_WARN, ALOG_COLOR_YELLOW);
+    set_level_color(ALOG_ERROR, ALOG_COLOR_RED);
+    set_level_color(ALOG_FATAL, ALOG_COLOR_MAGENTA);
+    set_level_color(ALOG_TEMP, ALOG_COLOR_CYAN);
+    set_level_color(ALOG_AUDIT, ALOG_COLOR_GREEN);
+}
+inline void ILogOutput::clear_color() {
+    set_level_color(ALOG_DEBUG, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_INFO, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_WARN, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_ERROR, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_FATAL, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_TEMP, ALOG_COLOR_NOTHING);
+    set_level_color(ALOG_AUDIT, ALOG_COLOR_NOTHING);
+}
+
 class LogFormatter
 {
 public:
@@ -329,6 +374,16 @@ public:
         log_formatter.put(*this, alog_forwarding(x));
         return *this;
     }
+    template<typename...Ts>
+    LogBuffer& operator << (const std::tuple<Ts...>& x)
+    {
+        return printf_tuple(x, std::make_index_sequence<sizeof...(Ts)>{});
+    }
+    template<typename Tuple, std::size_t...I>
+    LogBuffer& printf_tuple(const Tuple& x, std::index_sequence<I...>)
+    {
+        return printf(std::get<I>(x)...);
+    }
     LogBuffer& printf()
     {
         return *this;
@@ -420,12 +475,12 @@ struct STFMTLogBuffer : public LogBuffer
     }
 };
 
-template<typename FMT, typename...Ts> inline __INLINE__
-void __log__(int level, ILogOutput* output, const Prologue& prolog, FMT fmt, Ts&&...xs)
-{
+template<typename...Ps, typename FMT, typename...Ts> inline __INLINE__
+void __log__(int level, ILogOutput* output, const Prologue& prolog,
+                       const std::tuple<Ps...>& alt, FMT fmt, Ts&&...xs) {
     char buf[LOG_BUFFER_SIZE];
     STFMTLogBuffer log(buf, sizeof(buf), output);
-    log << prolog;
+    log << prolog << alt;
     log.print_fmt(fmt, std::forward<Ts>(xs)..., '\n');
     log.level = level;
 }
@@ -468,15 +523,19 @@ struct LogBuilder {
 #define _IS_LITERAL_STRING(x) \
     (sizeof(#x) > 2 && (#x[0] == '"') && (#x[sizeof(#x) - 2] == '"'))
 
+#ifndef ALWAYS_LOGGED
+constexpr static std::tuple<> ALWAYS_LOGGED{};
+#endif
+
 #define __LOG__(attr, logger, level, first, ...)    ({                 \
         DEFINE_PROLOGUE(level);                                        \
         auto L = [&](ILogOutput* out) __attribute__(attr) {            \
             if (_IS_LITERAL_STRING(first)) {                           \
-                return __log__(level, out, prolog,                     \
+                return __log__(level, out, prolog, ALWAYS_LOGGED,      \
                                TSTRING(#first).template strip<'\"'>(), \
                                ##__VA_ARGS__);                         \
             } else {                                                   \
-                return __log__(level, out, prolog,                     \
+                return __log__(level, out, prolog, ALWAYS_LOGGED,      \
                                ConstString::TString<>(), first,        \
                                ##__VA_ARGS__);                         \
             }                                                          \
@@ -486,17 +545,14 @@ struct LogBuilder {
 
 
 #define LOG_DEBUG(...)  (__LOG__((noinline, cold), default_logger, ALOG_DEBUG, __VA_ARGS__))
-#define LOG_INFO(...)   (__LOG__((noinline, cold), default_logger, ALOG_INFO, __VA_ARGS__))
-#define LOG_WARN(...)   (__LOG__((noinline, cold), default_logger, ALOG_WARN, __VA_ARGS__))
+#define LOG_INFO(...)   (__LOG__((noinline, cold), default_logger, ALOG_INFO,  __VA_ARGS__))
+#define LOG_WARN(...)   (__LOG__((noinline, cold), default_logger, ALOG_WARN,  __VA_ARGS__))
 #define LOG_ERROR(...)  (__LOG__((noinline, cold), default_logger, ALOG_ERROR, __VA_ARGS__))
 #define LOG_FATAL(...)  (__LOG__((noinline, cold), default_logger, ALOG_FATAL, __VA_ARGS__))
-#define LOG_TEMP(...)                                    \
-    {                                                    \
-        auto _err_bak = errno;                           \
-        __LOG__((noinline, cold), default_logger,        \
-                                ALOG_TEMP, __VA_ARGS__); \
-        errno = _err_bak;                                \
-    }
+#define LOG_TEMP(...)   {auto _err_bak = errno;                                              \
+                         __LOG__((noinline, cold), default_logger, ALOG_TEMP,  __VA_ARGS__); \
+                         errno = _err_bak;                                                   \
+                        }
 #ifndef DISABLE_AUDIT
 #define LOG_AUDIT(...) (__LOG__((), default_audit_logger, ALOG_AUDIT, __VA_ARGS__))
 #else
@@ -523,7 +579,7 @@ struct ERRNO
 LogBuffer& operator << (LogBuffer& log, ERRNO e);
 
 inline LogBuffer& operator << (LogBuffer& log, const photon::reterr& rvb) {
-    auto x = rvb._errno;
+    auto x = rvb._err;
     return x ? (log << ERRNO((int)x)) : log;
 }
 
@@ -560,9 +616,9 @@ inline LogBuffer& operator<<(LogBuffer& log, const NamedValue<T>& v) {
 inline void _alog_set_errno(int x) { errno = x; }
 
 struct DeferrdErrnoSetter {
-    int _errno = 0;
-    void operator()(int x) { _errno = x; }
-    ~DeferrdErrnoSetter() { if (_errno) errno = _errno; }
+    int _saved_errno = 0;
+    void operator()(int x) { _saved_errno = x; }
+    ~DeferrdErrnoSetter() { if (_saved_errno) errno = _saved_errno; }
 };
 
 #define DECLARE_ERRNO_SETTER DeferrdErrnoSetter _alog_set_errno;

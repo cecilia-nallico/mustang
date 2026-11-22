@@ -15,19 +15,22 @@ limitations under the License.
 */
 
 #include "expirecontainer.h"
+
 #include <photon/thread/thread.h>
 
 ExpireContainerBase::ExpireContainerBase(uint64_t lifespan,
-                                         uint64_t timer_cycle)
+                                         uint64_t timer_cycle,
+                                         uint64_t num_limit)
     : _lifespan(lifespan),
+      _num_limit(num_limit),
       _timer(std::max(static_cast<uint64_t>(1000), timer_cycle),
-             {this, &ExpireContainerBase::expire}, true, 8UL * 1024 * 1024) {}
+             {this, &ExpireContainerBase::expire}, true, 8ULL * 1024 * 1024) {}
 
 auto ExpireContainerBase::insert(Item* item) -> std::pair<iterator, bool> {
     return _set.emplace(item);
 }
 
-auto ExpireContainerBase::__find_prelock(const Item& key_item)  -> iterator {
+auto ExpireContainerBase::__find_prelock(const Item& key_item) -> iterator {
     auto it = _set.find((Item*)&key_item);
     return it;
 }
@@ -51,8 +54,11 @@ uint64_t ExpireContainerBase::expire() {
     ({
         SCOPED_LOCK(_lock);
         _list.split_by_predicate([&](Item* x) {
-            bool ret = x->_timeout.expiration() < photon::now;
-            if (ret) _set.erase(x);
+            bool ret = (x->_timeout.expiration() < photon::now) ||
+                       (_set.size() > _num_limit);
+            if (ret) {
+                _set.erase(x);
+            }
             return ret;
         });
     }).delete_all();
@@ -79,7 +85,7 @@ auto ObjectCacheBase::ref_acquire(const Item& key_item,
                                   uint64_t failure_cooldown) -> Item* {
     Base::iterator holder;
     Item* item = nullptr;
-    expire();
+    DEFER(expire());
     do {
         SCOPED_LOCK(_lock);
         holder = Base::__find_prelock(key_item);
@@ -117,7 +123,7 @@ auto ObjectCacheBase::ref_acquire(const Item& key_item,
 void* ObjectCacheBase::ref_release(ItemPtr item, bool recycle, bool destroy) {
     DEFER(expire());
     photon::semaphore sem;
-    void * ret = nullptr;
+    void* ret = nullptr;
     {
         SCOPED_LOCK(_lock);
         if (item->_recycle) recycle = false;
@@ -161,5 +167,4 @@ void* ObjectCacheBase::release(const Item& key_item, bool recycle,
         item = *it;
     }
     return ref_release(item, recycle, destroy);
-
 }

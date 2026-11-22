@@ -21,6 +21,8 @@ limitations under the License.
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <arpa/inet.h>
 #include <photon/common/alog-stdstring.h>
 #include <photon/common/iovector.h>
 #include <photon/common/alog.h>
@@ -28,6 +30,8 @@ limitations under the License.
 #include <photon/net/socket.h>
 #include <photon/thread/thread.h>
 
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "../base_socket.h"
@@ -78,7 +82,7 @@ public:
         OpenSSL_add_all_ciphers();
         OpenSSL_add_all_digests();
         OpenSSL_add_all_algorithms();
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000LL
         mtx.clear();
         for (int i = 0; i < CRYPTO_num_locks(); i++) {
             mtx.emplace_back(std::make_unique<photon::mutex>());
@@ -89,17 +93,105 @@ public:
     }
 
     ~GlobalSSLContext() {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000LL
         CRYPTO_set_id_callback(NULL);
         CRYPTO_set_locking_callback(NULL);
 #endif
     }
 };
 
+
+struct ALPNProtos {
+    const unsigned char* buf;
+    unsigned int buflen;
+
+    struct iterator {
+        using difference_type = long;
+        using value_type = estring_view;
+        using pointer = const estring_view *;
+        using reference = const estring_view &;
+        using iterator_category = std::forward_iterator_tag;
+        const ALPNProtos* proto;
+        size_t pos;
+
+        bool operator==(iterator& rhs) const {
+            return proto == rhs.proto && pos == rhs.pos;
+        }
+
+        bool operator!=(iterator& rhs) const { return !(*this == rhs); }
+
+        estring_view sv() const noexcept {
+            if (!proto) return estring_view();
+            return estring_view{(const char*)&proto->buf[pos + 1],
+                                (uint8_t)proto->buf[pos]};
+        }
+
+        estring_view operator*() const { return sv(); }
+        iterator& operator++() {
+            if (!proto) return *this;
+            if (proto->buf[pos]) {
+                pos += 1 + proto->buf[pos];
+                if (pos >= proto->buflen) {
+                    proto = nullptr;
+                    pos = 0;
+                }
+            } else {
+                proto = nullptr;
+                pos = 0;
+            }
+            return *this;
+        }
+
+        iterator operator++(int) {
+            auto ret = *this;
+            ++(*this);
+            return ret;
+        }
+    };
+
+    iterator begin() const { return {this, 0}; }
+    iterator end() const { return {nullptr, 0}; }
+    estring_view operator[](size_t idx) const {
+        auto it = begin();
+        for (size_t i = 0; i < idx; i++) {
+            ++it;
+        }
+        return *it;
+    }
+    uint8_t bufsize() const { return buflen; }
+};
+
+template <size_t BufSize = 256>
+struct ALPNProtosBuf : public ALPNProtos {
+    char __buf[BufSize]{};
+
+    ALPNProtosBuf() : ALPNProtos{(const unsigned char*)__buf, 0} {}
+
+    int insert(estring_view sv) {
+        if (sv.back() == '\0') sv = sv.substr(0, sv.size() - 1);
+        if (sv.empty()) return -1;
+        size_t pos = 0;
+        while (buf[pos] && pos < BufSize) {
+            pos += 1 + (uint8_t)__buf[pos];
+        }
+        if (pos >= BufSize || pos + sv.size() + 1 >= BufSize) {
+            errno = ENOSPC;
+            return -1;
+        }
+        __buf[pos] = sv.size();
+        memmove(&__buf[pos + 1], sv.data(), sv.size());
+        buflen = pos + sv.size() + 1;
+        return 0;
+    }
+};
+
+
 class TLSContextImpl : public TLSContext {
 public:
     SSL_CTX* ctx;
     char pempassword[MAX_PASSPHASE_SIZE];
+    Delegate<estring_view, const std::vector<estring_view>&> alpn_select_cb;
+    bool verify_hostname = true;
 
     explicit TLSContextImpl(TLSVersion ver) {
         char errbuf[4096];
@@ -121,10 +213,39 @@ public:
             SSL_CTX_set_max_proto_version(ctx, version);
         }
         SSL_CTX_set_ecdh_auto(ctx, 1);
+        SSL_CTX_set_alpn_select_cb(ctx, ctx_alpn_select_cb, this);
     }
 
     ~TLSContextImpl() override {
         if (ctx) SSL_CTX_free(ctx);
+    }
+
+    static int ctx_alpn_select_cb(SSL* ssl, const unsigned char** out, unsigned char*outlen, const unsigned char* in, unsigned int inlen, void* arg) {
+        auto ctx = ((TLSContextImpl*)arg);
+        assert(ctx->ctx == SSL_get_SSL_CTX(ssl));
+        if (in == nullptr || inlen == 0) {
+            return SSL_TLSEXT_ERR_NOACK;
+        }
+        ALPNProtos pts{in, inlen};
+        std::vector<estring_view> es(pts.begin(), pts.end());
+        auto ret = ctx->alpn_select_cb(es);
+        if (ret.empty()) {
+            return SSL_TLSEXT_ERR_ALERT_FATAL;
+        }
+        *out = (const unsigned char*)ret.data();
+        *outlen = ret.length();
+        return SSL_TLSEXT_ERR_OK;
+    }
+
+    int set_alpn_select_cb(Delegate<estring_view, const std::vector<estring_view>&> cb) override {
+        alpn_select_cb = cb;
+        return 0;
+    }
+
+    int set_alpn_protos(const std::vector<estring_view>& protos) override {
+        ALPNProtosBuf<4096> buf;
+        for (auto x : protos) buf.insert(x);
+        return SSL_CTX_set_alpn_protos(ctx, buf.buf, buf.buflen);
     }
 
     static int pem_password_cb(char* buf, int size, int rwflag, void* ptr) {
@@ -241,6 +362,15 @@ public:
         LOG_DEBUG("Loaded CA certificates from file=` path=`", ca_file, ca_path);
         return 0;
     }
+
+    int set_verify_hostname(bool enable) override {
+        verify_hostname = enable;
+        return 0;
+    }
+
+    VerifyMode get_verify_mode() override {
+        return (VerifyMode)SSL_CTX_get_verify_mode(ctx);
+    }
 };
 
 void __OpenSSLGlobalInit() {
@@ -272,8 +402,10 @@ class TLSSocketStream : public ForwardSocketStream {
 public:
     SSL* ssl;
     BIO* ssbio;
+    TLSContextImpl* ctx_impl;
+    SecurityRole role;
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10100000LL
     static void* BIO_get_data(BIO* b) { return b->ptr; }
 
     static void BIO_set_data(BIO* b, void* ptr) { b->ptr = ptr; }
@@ -394,7 +526,8 @@ public:
 
     TLSSocketStream(TLSContext* ctx, ISocketStream* stream, SecurityRole r,
                     bool ownership = false)
-        : ForwardSocketStream(stream, ownership) {
+        : ForwardSocketStream(stream, ownership),
+          ctx_impl((TLSContextImpl*)ctx), role(r) {
         ssl = SSL_new(((TLSContextImpl*)ctx)->ctx);
         ssbio = BIO_new(BIO_s_sockstream());
         BIO_ctrl(ssbio, BIO_C_SET_FILE_PTR, 0, stream);
@@ -403,12 +536,27 @@ public:
         switch (r) {
             case SecurityRole::Client:
                 SSL_set_connect_state(ssl);
-                break;
+                // Defer the handshake to the first I/O. The SNI hostname and the
+                // name to verify the peer certificate against are set via
+                // tls_stream_set_hostname() AFTER construction; SNI must be
+                // carried in the ClientHello and the verify params must be in
+                // place before the chain is checked, so handshaking here would
+                // be too early for both. SSL_read/SSL_write drives the client
+                // handshake once they have been set.
+                return;
             case SecurityRole::Server:
                 SSL_set_accept_state(ssl);
                 break;
             default:
                 break;
+        }
+
+        auto handshake = SSL_do_handshake(ssl);
+        while (handshake < 0) {
+            auto err = SSL_get_error(ssl, handshake);
+            if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+                return;
+            }
         }
     }
 
@@ -506,15 +654,117 @@ ISocketStream* new_tls_stream(TLSContext* ctx, ISocketStream* base,
     return new TLSSocketStream(ctx, base, role, ownership);
 };
 
-void tls_stream_set_hostname(ISocketStream* stream, const char* hostname) {
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L
-    if (auto s1 = dynamic_cast<TLSSocketStream*>(stream)) {
-        if (SSL_set_tlsext_host_name(s1->ssl, hostname) != 1)
-            LOG_ERROR("Failed to set hostname on tls stream: `", VALUE(hostname));
-    } else if (auto s2 = dynamic_cast<ForwardSocketStream*>(stream)) {
-        auto underlay = static_cast<ISocketStream*>(s2->get_underlay_object(0));
-        tls_stream_set_hostname(underlay, hostname);
+// Walk down a chain of wrappers (pooling, forwarding) to the TLS stream itself.
+static TLSSocketStream* find_tls_stream(ISocketStream* stream) {
+    while (stream) {
+        if (auto s = dynamic_cast<TLSSocketStream*>(stream)) return s;
+        auto f = dynamic_cast<ForwardSocketStream*>(stream);
+        if (!f) return nullptr;
+        stream = static_cast<ISocketStream*>(f->get_underlay_object(0));
     }
+    return nullptr;
+}
+
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+static bool is_ip_literal(const char* hostname) {
+    struct in_addr v4;
+    struct in6_addr v6;
+    return inet_pton(AF_INET, hostname, &v4) == 1 ||
+           inet_pton(AF_INET6, hostname, &v6) == 1;
+}
+
+// A terminal root dot marks an absolute DNS name, but is not part of the name
+// used for SNI or certificate matching. Normalize once so both paths classify
+// IP literals and DNS names identically.
+static const char* strip_root_dot(const char* hostname, std::string& storage) {
+    size_t len = strlen(hostname);
+    if (len < 2 || hostname[len - 1] != '.') return hostname;
+    storage.assign(hostname, len - 1);
+    return storage.c_str();
+}
+
+// Send DNS `hostname` as SNI, telling the server which certificate to send.
+// RFC 6066 forbids literal IPv4 and IPv6 addresses in the HostName field.
+static int tls_set_sni(SSL* ssl, const char* hostname) {
+    if (is_ip_literal(hostname)) {
+        LOG_DEBUG("SNI omitted for IP literal, ", VALUE(hostname));
+        return 0;
+    }
+    if (SSL_set_tlsext_host_name(ssl, hostname) != 1)
+        LOG_ERROR_RETURN(EINVAL, -1, "failed to set SNI on tls stream, ", VALUE(hostname));
+    return 0;
+}
+
+// Bind the peer certificate to `hostname`, so that a certificate signed by a
+// trusted CA but issued to some other name is rejected.
+static int tls_set_verify_host(SSL* ssl, const char* hostname) {
+    auto param = SSL_get0_param(ssl);
+    if (!param)
+        LOG_ERROR_RETURN(EINVAL, -1, "failed to get verify params of tls stream");
+
+    // X509_check_host() never matches iPAddress SANs, so literals take a
+    // separate path; without it every IP-literal peer would be rejected.
+    if (is_ip_literal(hostname)) {
+        if (X509_VERIFY_PARAM_set1_ip_asc(param, hostname) != 1)
+            LOG_ERROR_RETURN(EINVAL, -1, "failed to set verified ip of tls stream, ", VALUE(hostname));
+        return 0;
+    }
+
+    // Reject wildcards that cover only part of a label, such as www*.example.com.
+    // Matching a single label, and only in the leftmost position, is already the
+    // default; this flag narrows what that one label may look like.
+    X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    // Note that a zero length would instead clear the list and report success,
+    // verifying nothing; that is why an empty hostname is rejected before
+    // reaching here.
+    if (X509_VERIFY_PARAM_set1_host(param, hostname, strlen(hostname)) != 1)
+        LOG_ERROR_RETURN(EINVAL, -1, "failed to set verified hostname of tls stream, ", VALUE(hostname));
+    return 0;
+}
+#endif
+
+int tls_stream_set_hostname(ISocketStream* stream, const char* hostname) {
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+    if (!hostname || !*hostname)
+        LOG_ERROR_RETURN(EINVAL, -1, "hostname is null or empty");
+    auto s = find_tls_stream(stream);
+    if (!s)
+        LOG_ERROR_RETURN(EINVAL, -1, "not a tls stream, ", VALUE(stream));
+    if (s->role != SecurityRole::Client)
+        LOG_ERROR_RETURN(EINVAL, -1, "only a client verifies a peer's hostname, ", VALUE(hostname));
+
+    std::string normalized_hostname_storage;
+    hostname = strip_root_dot(hostname, normalized_hostname_storage);
+
+    if (!s->ctx_impl->verify_hostname)  // verification opted out of, SNI only
+        return tls_set_sni(s->ssl, hostname);
+
+    // SSL_set1_host() is only consulted while the chain is being verified, so
+    // under SSL_VERIFY_NONE it would be silently inert, accepting any name.
+    // Refuse instead of pretending to verify.
+    if (SSL_get_verify_mode(s->ssl) == SSL_VERIFY_NONE)
+        LOG_ERROR_RETURN(EINVAL, -1, "hostname verification requires VerifyMode::PEER; call set_verify_mode(VerifyMode::PEER), or set_verify_hostname(false) to send SNI only, ", VALUE(hostname));
+
+    if (tls_set_sni(s->ssl, hostname) < 0)
+        return -1;
+    return tls_set_verify_host(s->ssl, hostname);
+#else
+    LOG_ERROR_RETURN(ENOSYS, -1, "hostname verification requires OpenSSL 1.0.2 or later, ", VALUE(hostname));
+#endif
+}
+
+int tls_stream_set_sni(ISocketStream* stream, const char* hostname) {
+#if OPENSSL_VERSION_NUMBER >= 0x10002000L
+    if (!hostname || !*hostname)
+        LOG_ERROR_RETURN(EINVAL, -1, "hostname is null or empty");
+    auto s = find_tls_stream(stream);
+    if (!s)
+        LOG_ERROR_RETURN(EINVAL, -1, "not a tls stream, ", VALUE(stream));
+    std::string normalized_hostname_storage;
+    hostname = strip_root_dot(hostname, normalized_hostname_storage);
+    return tls_set_sni(s->ssl, hostname);
+#else
+    LOG_ERROR_RETURN(ENOSYS, -1, "SNI requires OpenSSL 1.0.2 or later, ", VALUE(hostname));
 #endif
 }
 
@@ -578,6 +828,16 @@ ISocketServer* new_tls_server(TLSContext* ctx, ISocketServer* base,
         LOG_ERROR_RETURN(EINVAL, nullptr, "invalid parameters, ", VALUE(ctx),
                          VALUE(base));
     return new TLSSocketServer(ctx, base, ownership);
+}
+
+estring_view tls_stream_get_alpn_selected(ISocketStream* stream) {
+    auto s = dynamic_cast<TLSSocketStream*>(stream);
+    if (!s) return {};
+    const unsigned char* data;
+    unsigned int len;
+    SSL_get0_alpn_selected(s->ssl, &data, &len);
+    if (!data) return {};
+    return {(char*)data, len};
 }
 
 }  // namespace net
