@@ -77,6 +77,8 @@ We use PhotonLibOS as our general coroutine/event loop. Always use PhotonLibOS f
 Never use exceptions. Use `absl::Status` and `absl::StatusOr` for all error handling. If we call an external
 library that could throw an exception, wrap it in a narrow `try catch` that adapts it into a status.
 
+We do not like the status macros (`ABSL_ASSIGN_OR_RETURN` etc). Never use them, always use explicit `if` checks instead.
+
 ### In-out parameters
 
 Non-null short lived const parameters are const references.
@@ -93,6 +95,8 @@ Always use braces for `if` statements, even around one liner `if` statements.
 
 All headers start with `#pragma once`. Not old style header guards.
 All code is in namespace `mustang`. Use anonymous namespace in `.cc` files every time it's possible.
+
+No extra whitespace before or after namespace declaration.
 
 ## Comments
 

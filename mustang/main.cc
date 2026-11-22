@@ -4,11 +4,9 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/status/status.h"
-#include "absl/status/status_macros.h"
-
-#include "mustang/photon_headers.h"
 
 #include "mustang/greet.h"
+#include "mustang/photon_headers.h"
 #include "mustang/runtime.h"
 
 ABSL_FLAG(std::string, name, "world",
@@ -20,14 +18,20 @@ ABSL_FLAG(std::string, event_engine, "auto",
 
 namespace mustang {
 namespace {
-
 absl::Status RealMain() {
   RuntimeOptions options;
   options.log_level = absl::GetFlag(FLAGS_log_level);
-  ABSL_ASSIGN_OR_RETURN(options.event_engine,
-                        EventEngineFromName(absl::GetFlag(FLAGS_event_engine)));
+  absl::StatusOr<uint64_t> event_engine =
+      EventEngineFromName(absl::GetFlag(FLAGS_event_engine));
+  if (!event_engine.ok()) {
+    return event_engine.status();
+  }
+  options.event_engine = *event_engine;
 
-  ABSL_ASSIGN_OR_RETURN(Runtime runtime, Runtime::Create(options));
+  absl::StatusOr<Runtime> runtime = Runtime::Create(options);
+  if (!runtime.ok()) {
+    return runtime.status();
+  }
 
   // Application work runs as a photon coroutine on the runtime we just
   // initialized; the main thread only joins it.
@@ -54,7 +58,6 @@ absl::Status RealMain() {
   LOG_INFO("mustang says: `", greeting);
   return absl::OkStatus();
 }
-
 }  // namespace
 }  // namespace mustang
 

@@ -1,1 +1,9 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
 exports_files(glob(["*.bzl"]))
+
+sh_test(
+    name = "mustang_e2e_test",
+    srcs = ["mustang_e2e_test.sh"],
+    data = ["//mustang:mustang"],
+)

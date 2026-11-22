@@ -1,16 +1,11 @@
+#include "absl/status/status.h"
 #include "gtest/gtest.h"
 
-#include <cstdint>
-
-#include "absl/status/status.h"
-
 #include "mustang/photon_headers.h"
-
 #include "mustang/runtime.h"
 
 namespace mustang {
 namespace {
-
 TEST(RuntimeTest, RejectsInvalidLogLevel) {
   RuntimeOptions options;
   options.log_level = 42;
@@ -45,6 +40,5 @@ TEST(RuntimeTest, RunsCoroutines) {
 
   EXPECT_EQ(counter, 1);
 }
-
 }  // namespace
 }  // namespace mustang

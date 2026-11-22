@@ -9,9 +9,7 @@
 
 namespace mustang {
 namespace {
-
 constexpr int kMaxLogLevel = kLogLevelFatal;
-
 }  // namespace
 
 absl::StatusOr<uint64_t> EventEngineFromName(absl::string_view name) {
@@ -60,5 +58,4 @@ Runtime::~Runtime() {
     photon::fini();
   }
 }
-
 }  // namespace mustang

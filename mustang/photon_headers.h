@@ -7,9 +7,6 @@
 // may only be disabled for third-party code). Including them through this
 // umbrella silences clang diagnostics *inside* the photon headers only;
 // diagnostics pop back on for mustang code that follows.
-//
-// When including photon from mustang code, include this header in the
-// third-party include block, not the mustang one.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
 #pragma clang diagnostic ignored "-Wdeprecated-copy"

@@ -5,9 +5,7 @@
 
 namespace mustang {
 namespace {
-
 constexpr char kEmptyNameError[] = "name must not be empty";
-
 }  // namespace
 
 absl::StatusOr<std::string> Greet(absl::string_view name) {
@@ -16,5 +14,4 @@ absl::StatusOr<std::string> Greet(absl::string_view name) {
   }
   return absl::StrCat("Hello, ", name, "!");
 }
-
 }  // namespace mustang

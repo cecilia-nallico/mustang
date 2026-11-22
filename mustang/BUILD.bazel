@@ -1,4 +1,3 @@
-load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//tools:defaults.bzl", "mustang_cc_binary", "mustang_cc_library", "mustang_cc_test")
 
 mustang_cc_library(
@@ -27,13 +26,14 @@ mustang_cc_library(
 mustang_cc_binary(
     name = "mustang",
     srcs = ["main.cc"],
+    # Run by //tools:mustang_e2e_test.
+    visibility = ["//visibility:public"],
     deps = [
         ":greet",
         ":runtime",
         "@abseil-cpp//absl/flags:flag",
         "@abseil-cpp//absl/flags:parse",
         "@abseil-cpp//absl/status",
-        "@abseil-cpp//absl/status:status_macros",
         "//third_party/photon",
     ],
 )
@@ -57,10 +57,4 @@ mustang_cc_test(
         "@googletest//:gtest_main",
         "//third_party/photon",
     ],
-)
-
-sh_test(
-    name = "mustang_e2e_test",
-    srcs = ["mustang_e2e_test.sh"],
-    data = [":mustang"],
 )

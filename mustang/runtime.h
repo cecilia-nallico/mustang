@@ -8,7 +8,6 @@
 #include "mustang/photon_headers.h"
 
 namespace mustang {
-
 // PhotonLibOS log levels (ALOG_* values from photon/common/alog.h).
 inline constexpr int kLogLevelDebug = 0;
 inline constexpr int kLogLevelInfo = 1;
@@ -45,5 +44,4 @@ class Runtime {
 
   bool active_ = false;
 };
-
 }  // namespace mustang

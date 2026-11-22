@@ -1,12 +1,10 @@
-#include "gtest/gtest.h"
-
 #include "absl/status/status.h"
+#include "gtest/gtest.h"
 
 #include "mustang/greet.h"
 
 namespace mustang {
 namespace {
-
 TEST(GreetTest, GreetsByName) {
   absl::StatusOr<std::string> greeting = Greet("photon");
   ASSERT_TRUE(greeting.ok());
@@ -18,6 +16,5 @@ TEST(GreetTest, RejectsEmptyName) {
   ASSERT_FALSE(greeting.ok());
   EXPECT_EQ(greeting.status().code(), absl::StatusCode::kInvalidArgument);
 }
-
 }  // namespace
 }  // namespace mustang
