@@ -1,0 +1,69 @@
+load("//tools:defaults.bzl", "walleye_cc_binary", "walleye_cc_library", "walleye_cc_test")
+
+walleye_cc_library(
+    name = "greet",
+    srcs = ["greet.cc"],
+    hdrs = ["greet.h"],
+    deps = [
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+walleye_cc_library(
+    name = "photon_headers",
+    hdrs = ["photon_headers.h"],
+    visibility = ["//visibility:public"],
+    deps = ["//third_party/photon"],
+)
+
+walleye_cc_library(
+    name = "runtime",
+    srcs = ["runtime.cc"],
+    hdrs = ["runtime.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":photon_headers",
+        "//third_party/photon",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+walleye_cc_binary(
+    name = "walleye",
+    srcs = ["main.cc"],
+    # Run by //tools:walleye_e2e_test.
+    visibility = ["//visibility:public"],
+    deps = [
+        ":greet",
+        ":runtime",
+        "//third_party/photon",
+        "@abseil-cpp//absl/flags:flag",
+        "@abseil-cpp//absl/flags:parse",
+        "@abseil-cpp//absl/status",
+    ],
+)
+
+walleye_cc_test(
+    name = "greet_test",
+    srcs = ["greet_test.cc"],
+    deps = [
+        ":greet",
+        "@abseil-cpp//absl/status",
+        "@googletest//:gtest_main",
+    ],
+)
+
+walleye_cc_test(
+    name = "runtime_test",
+    srcs = ["runtime_test.cc"],
+    deps = [
+        ":runtime",
+        "//third_party/photon",
+        "@abseil-cpp//absl/status",
+        "@googletest//:gtest_main",
+    ],
+)

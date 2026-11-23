@@ -19,7 +19,7 @@ Build rules and patches for third-party go under `third_party`.
 Every `third_party/<dep>` directory carries a README.md recording the upstream version and commit,
 the license, what is compiled and any local modifications.
 
-First-party C++ targets are always declared through the `mustang_cc_*` macros in
+First-party C++ targets are always declared through the `walleye_cc_*` macros in
 `tools/defaults.bzl` (they own the strict warning flags and static linking); never raw `cc_*` rules.
 `tools/scripts/format.sh` (clang-format + buildifier) must pass with `--check` before every commit.
 
@@ -30,8 +30,8 @@ Maitain an ASAN build that must be green at all times.
 
 ## File organization
 
-Use the monorepo style. Files go under `mustang/foo.cc` , `mustang/bar/baz.cc`, etc.
-Import style is fully qualified: `#include "mustang/bar/baz.h"`.
+Use the monorepo style. Files go under `walleye/foo.cc` , `walleye/bar/baz.cc`, etc.
+Import style is fully qualified: `#include "walleye/bar/baz.h"`.
 File suffixes are ".h" and ".cc" for headers.
 
 ## C++ style
@@ -46,7 +46,7 @@ Use this style:
 ```c
 // in a cc file, its own header always goes first.
 // in a test file, the header under test is its own header.
-#include "mustang/foo.h"
+#include "walleye/foo.h"
 
 // system headers are in angle brackets. C and C++ are mixed together. 
 #include <stddef.h>
@@ -57,9 +57,9 @@ Use this style:
 #include "absl/strings/str_cat.h"
 #include "photon/photon.h"
 
-// headers of other mustang files.
-#include "mustang/bar.h"
-#include "mustang/baz.h"
+// headers of other walleye files.
+#include "walleye/bar.h"
+#include "walleye/baz.h"
 ```
 
 Within each block, includes are sorted alphabetically (enforced by clang-format).
@@ -76,7 +76,7 @@ instead of the standard.
   - Time: `absl::Time` and `absl::Duration`, never `time(3)` or `std::chrono`.
   - Errors: `absl::Status`, `absl::StatusOr`, `absl::ErrnoToStatus` for errno.
   - Flags for command line arguments.
-  - Scope guards: `absl::Cleanup`, preferred over photon's `DEFER` in mustang code.
+  - Scope guards: `absl::Cleanup`, preferred over photon's `DEFER` in walleye code.
   - Wide integers: `absl::int128`.
 
 We use PhotonLibOS as our general coroutine/event loop. Always use PhotonLibOS for:
@@ -89,9 +89,9 @@ We use PhotonLibOS as our general coroutine/event loop. Always use PhotonLibOS f
     `photon::condvar`, `SCOPED_LOCK`.
   - Log: we use PhotonLibOS logs instead of Abseil.
 
-Photon headers are included only through the umbrella `mustang/photon_headers.h` (extend the
+Photon headers are included only through the umbrella `walleye/photon_headers.h` (extend the
 umbrella when a new photon header is needed); direct `photon/...` includes are not allowed in
-mustang code.
+walleye code.
 
 Photon logging conventions: backtick as variable placeholder (`LOG_WARN("count `", n)`), `VALUE(x)`
 to log a variable's name and value, `LOG_ERROR_RETURN` when logging and returning an error.
@@ -125,19 +125,19 @@ Never do `using` directives in either headers or implementation files: always fu
 ### Namespace
 
 All headers start with `#pragma once`. Not old style header guards.
-All code is in namespace `mustang`. Use anonymous namespace in `.cc` files every time it's possible.
+All code is in namespace `walleye`. Use anonymous namespace in `.cc` files every time it's possible.
 
 No blank line directly after a `namespace ... {` opening and none directly before a
 `}  // namespace` closing:
 
 ```c
-namespace mustang {
+namespace walleye {
 namespace {
 constexpr int kFoo = 1;
 }  // namespace
 
 int Api();
-}  // namespace mustang
+}  // namespace walleye
 ```
 
 ## Comments

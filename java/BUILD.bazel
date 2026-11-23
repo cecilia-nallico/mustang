@@ -3,10 +3,10 @@ load("@rules_java//java:defs.bzl", "java_binary")
 java_binary(
     name = "interop_client",
     srcs = glob(["src/**/*.java"]),
-    main_class = "mustang.interop.InteropClient",
+    main_class = "walleye.interop.InteropClient",
     visibility = ["//visibility:public"],
     deps = [
-        "//mustang/grpc/interop:interop_java_proto",
+        "//walleye/grpc/interop:interop_java_proto",
         "@maven//:io_grpc_grpc_api",
         "@maven//:io_grpc_grpc_netty",
         "@maven//:io_grpc_grpc_protobuf",

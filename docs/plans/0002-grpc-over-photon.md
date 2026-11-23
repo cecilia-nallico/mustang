@@ -20,10 +20,10 @@ transport**:
 - HPACK: static table only — no dynamic table, so real gRPC peers (which
   index :path etc.) cannot be decoded.
 
-Consequence (supersedes "fix photon's Impl" in M2): **mustang owns the h2
-transport** — `mustang/grpc/connection` (reader coroutine demux into
+Consequence (supersedes "fix photon's Impl" in M2): **walleye owns the h2
+transport** — `walleye/grpc/connection` (reader coroutine demux into
 per-stream queues, serialized writer, both-level flow control, CONTINUATION,
-padding, SETTINGS, PING, GOAWAY) and `mustang/grpc/hpack` (full RFC 7541:
+padding, SETTINGS, PING, GOAWAY) and `walleye/grpc/hpack` (full RFC 7541:
 static + dynamic tables, eviction, size updates, huffman both ways, reusing
 photon's `net/http/huffman` codec). Reused from photon as-is: `FrameHeader`
 frame codec (streams.h), preface string, huffman, sockets/event loop.
@@ -69,7 +69,7 @@ server. Methodology mandated by the project owner:
    non-blocking I/O agnostic). nghttp2 is NOT the default because photon
    already owns the coroutine/socket layer and a pure-C++ stack fits the
    thread-per-core design.
-2. **gRPC stack owned by mustang** on top of H2Connection/H2Stream:
+2. **gRPC stack owned by walleye** on top of H2Connection/H2Stream:
    we own h2c prior-knowledge connection setup, the accept loop (photon
    socket server), HPACK policy, flow-control policy, and all gRPC
    semantics. TLS+ALPN comes later (M5); v1 speaks h2c (plaintext) which is
@@ -79,10 +79,10 @@ server. Methodology mandated by the project owner:
    and a grpc C++ client against our server. This is the compliance
    authority, plus h2spec for the h2 layer.
 4. Protobuf is the message format (REAPI is proto); codegen via protoc
-   plugin in `tools/`, generating into `mustang/gen/` (gitignored) — same
+   plugin in `tools/`, generating into `walleye/gen/` (gitignored) — same
    pattern frontend/walleye used for buf.
 5. API shape (C++20, coroutines are photon threads):
-   `mustang::grpc::Server` / `mustang::grpc::Client`, method handlers
+   `walleye::grpc::Server` / `walleye::grpc::Client`, method handlers
    registered as `photon::Delegate`-style callbacks over
    `ServerContext`/`ClientContext` with `absl::StatusOr` returns; unary +
    server/client/bidi streaming from day 1 (REAPI needs them).
@@ -102,7 +102,7 @@ HTTP/1.1 cleartext upgrade, proxy env support, deadlines-in-WS.
 ## Architecture sketch
 
 ```
-mustang/grpc/
+walleye/grpc/
   connection.{h,cc}     h2c connection: preface/settings/GOAWAY/keepalive
   stream.{h,cc}         gRPC stream over H2Stream: framing, trailers, status
   framing.{h,cc}        5-byte message prefix codec (encode/decode)
@@ -111,7 +111,7 @@ mustang/grpc/
   client.{h,cc}         connection pool, channel semantics, calls
   context.{h,cc}        Server/ClientContext: metadata, deadline, cancel
   codec.h               message serializer interface (protobuf impl)
-mustang/grpc/test/      all tests (below) + proto test corpus
+walleye/grpc/test/      all tests (below) + proto test corpus
 tools/proto/            protoc plugin/wrapper
 tools/scripts/h2spec.sh conformance harness (optional, external h2spec)
 ```
@@ -148,7 +148,7 @@ h2 layer (some may already exist upstream as test_h2.cpp — port them):
   PING + PING-ACK; stream state machine (RFC 9113 5.1) invalid transitions;
   unknown frame type ignored; connection error vs stream error handling.
 h2 conformance: tools/scripts/h2spec.sh wrapping h2spec (Go tool) against a
-  tiny mustang h2 test server; record pass/fail report in docs/plans/.
+  tiny walleye h2 test server; record pass/fail report in docs/plans/.
 gRPC wire (loopback over our own stack):
   unary roundtrip; message framing: 1B compressed-flag + 4BE length,
   multi-message streams; grpc-status trailer mapping for every code we

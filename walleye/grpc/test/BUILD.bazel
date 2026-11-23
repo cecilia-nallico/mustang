@@ -1,0 +1,24 @@
+load("//walleye/grpc:protobuf.bzl", "walleye_grpc_proto")
+load("//tools:defaults.bzl", "walleye_cc_test")
+
+walleye_grpc_proto(
+    name = "echo_proto",
+    srcs = ["echo.proto"],
+    visibility = ["//visibility:private"],
+)
+
+walleye_cc_test(
+    name = "typed_test",
+    srcs = ["typed_test.cc"],
+    deps = [
+        ":echo_proto",
+        "//walleye:runtime",
+        "//walleye/grpc:call",
+        "//walleye/grpc:server",
+        "//walleye/grpc:typed",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+    ],
+)

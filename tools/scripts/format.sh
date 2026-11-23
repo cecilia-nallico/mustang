@@ -2,7 +2,7 @@
 
 # Format all first-party sources.
 #
-#   clang-format  every .h/.cc under mustang/   (config: /.clang-format)
+#   clang-format  every .h/.cc under walleye/   (config: /.clang-format)
 #   buildifier    MODULE.bazel, BUILD.bazel, *.bzl of the repo
 #
 # --check verifies only (no writes) and exits non-zero when anything is
@@ -29,7 +29,7 @@ done
 
 cpp_files=()
 while IFS= read -r -d '' f; do cpp_files+=("${f}"); done < <(
-  find mustang -type f \( -name '*.h' -o -name '*.cc' \) -print0
+  find walleye -type f \( -name '*.h' -o -name '*.cc' \) -print0
 )
 
 build_files=(MODULE.bazel)

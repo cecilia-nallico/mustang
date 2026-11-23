@@ -122,7 +122,7 @@ INTERNAL=13 UNAVAILABLE=14 DATA_LOSS=15 UNAUTHENTICATED=16
 
 ## Open questions deferred (not v1-blocking)
 
-- grpc-status-details-bin propagation into mustang Status (needs google.rpc
+- grpc-status-details-bin propagation into walleye Status (needs google.rpc
   proto dependency) — decide at M3.
 - Server-side grpc-timeout enforcement granularity (per-message check vs
   deadline in handler context).

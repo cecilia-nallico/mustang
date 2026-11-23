@@ -6,9 +6,9 @@ vertical slice proving the whole stack. `bazel build //...` and
 
 ## Layout
 
-- `mustang/` — all first-party code (`//mustang:mustang` binary, `greet`,
+- `walleye/` — all first-party code (`//walleye:walleye` binary, `greet`,
   `runtime` libraries, gtest + sh tests).
-- `tools/defaults.bzl` — `mustang_cc_*` macros; the single place that owns
+- `tools/defaults.bzl` — `walleye_cc_*` macros; the single place that owns
   `-std=c++20 -Wall -Wextra -Werror` and `linkstatic`.
 - `third_party/photon` — PhotonLibOS v0.9.6 source tree + our BUILD
   (upstream has no Bazel support and is not on the BCR).
@@ -38,8 +38,8 @@ vertical slice proving the whole stack. `bazel build //...` and
 - **Local photon patch** (documented in third_party/photon/README.md):
   `tls-stream.cpp` uses `TLS_method()` + min/max proto version instead of
   `TLSv1_1_method()/TLSv1_2_method()`, which OpenSSL 4.0 removed.
-- **Photon headers are not -Wextra clean**: mustang code includes them via
-  `mustang/photon_headers.h`, which pushes/pops clang diagnostics so
+- **Photon headers are not -Wextra clean**: walleye code includes them via
+  `walleye/photon_headers.h`, which pushes/pops clang diagnostics so
   suppression applies inside photon headers only (styleguide allows
   suppressing warnings for third-party, not for us).
 - **Fully static binaries** via `build --features=fully_static_link`
@@ -48,9 +48,9 @@ vertical slice proving the whole stack. `bazel build //...` and
 
 ## Testing
 
-- `//mustang:greet_test`, `//mustang:runtime_test` (gtest; runtime test
+- `//walleye:greet_test`, `//walleye:runtime_test` (gtest; runtime test
   runs a coroutine with a timer sleep and joins it),
-  `//tools:mustang_e2e_test` (sh_test executing the real binary, flags
+  `//tools:walleye_e2e_test` (sh_test executing the real binary, flags
   and exit codes).
 - ASAN: `--config=asan` exists (asan + frame pointers, full-static
   disabled under asan because the static ASan runtime requires a dynamic
@@ -67,7 +67,7 @@ vertical slice proving the whole stack. `bazel build //...` and
 bazel build //...            # everything (fully static binaries)
 bazel test  //...            # unit + e2e tests
 bazel test --config=asan //...   # once the AppProtection preload issue is fixed
-bazel run   //mustang:mustang -- --name=you --log_level=0 --event_engine=iouring
-tools/scripts/format.sh      # clang-format mustang/**, buildifier all BUILD files
+bazel run   //walleye:walleye -- --name=you --log_level=0 --event_engine=iouring
+tools/scripts/format.sh      # clang-format walleye/**, buildifier all BUILD files
 tools/scripts/format.sh --check   # verify only, non-zero exit if unformatted
 ```

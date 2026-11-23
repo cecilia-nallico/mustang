@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Java compliance suite: official gRPC-java client against the mustang
+# Java compliance suite: official gRPC-java client against the walleye
 # (photon) gRPC server. Starts the server, waits for its PORT line,
 # runs the client, propagates its exit code.
 set -euo pipefail
 
-readonly SERVER="${TEST_SRCDIR}/${TEST_WORKSPACE}/mustang/grpc/interop/java_interop_server"
+readonly SERVER="${TEST_SRCDIR}/${TEST_WORKSPACE}/walleye/grpc/interop/java_interop_server"
 readonly CLIENT="${TEST_SRCDIR}/${TEST_WORKSPACE}/java/interop_client"
 readonly OUT="${TEST_TMPDIR}/server.out"
 readonly ERR="${TEST_TMPDIR}/server.err"

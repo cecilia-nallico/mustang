@@ -1,0 +1,180 @@
+load("//tools:defaults.bzl", "walleye_cc_binary", "walleye_cc_library", "walleye_cc_test")
+
+walleye_cc_library(
+    name = "hpack",
+    srcs = ["hpack.cc"],
+    hdrs = ["hpack.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//third_party/photon",
+        "//walleye:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/types:span",
+    ],
+)
+
+walleye_cc_test(
+    name = "hpack_test",
+    srcs = ["hpack_test.cc"],
+    deps = [
+        ":hpack",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest_main",
+    ],
+)
+
+walleye_cc_library(
+    name = "connection",
+    srcs = ["connection.cc"],
+    hdrs = ["connection.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":hpack",
+        ":wire",
+        "//walleye:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+walleye_cc_test(
+    name = "connection_test",
+    srcs = ["connection_test.cc"],
+    deps = [
+        ":connection",
+        ":hpack",
+        ":test_util",
+        "//walleye:runtime",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest_main",
+    ],
+)
+
+walleye_cc_library(
+    name = "wire",
+    srcs = ["wire.cc"],
+    hdrs = ["wire.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":hpack",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+walleye_cc_test(
+    name = "wire_test",
+    srcs = ["wire_test.cc"],
+    deps = [
+        ":wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+    ],
+)
+
+walleye_cc_library(
+    name = "test_util",
+    hdrs = ["test_util.h"],
+    visibility = ["//visibility:private"],
+    deps = [
+        "//walleye:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+walleye_cc_library(
+    name = "call",
+    srcs = ["call.cc"],
+    hdrs = ["call.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":connection",
+        ":hpack",
+        ":wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+walleye_cc_library(
+    name = "server",
+    srcs = ["server.cc"],
+    hdrs = ["server.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":call",
+        ":connection",
+        ":hpack",
+        ":wire",
+        "//walleye:photon_headers",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)
+
+walleye_cc_test(
+    name = "grpc_test",
+    srcs = ["grpc_test.cc"],
+    deps = [
+        ":call",
+        ":hpack",
+        ":server",
+        ":test_util",
+        ":wire",
+        "//walleye:runtime",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+    ],
+)
+
+walleye_cc_test(
+    name = "interop_test",
+    srcs = ["interop_test.cc"],
+    # gRPC's own headers use deprecated APIs; sanctioned third-party warning
+    # suppression (styleguide).
+    copts = ["-Wno-deprecated-declarations"],
+    deps = [
+        ":call",
+        ":hpack",
+        ":server",
+        ":wire",
+        "//walleye:runtime",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+        "@googletest//:gtest_main",
+        "@grpc//:grpc++",
+    ],
+)
+
+walleye_cc_library(
+    name = "typed",
+    srcs = ["typed.cc"],
+    hdrs = ["typed.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":call",
+        ":server",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)

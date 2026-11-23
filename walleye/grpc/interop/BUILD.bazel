@@ -1,0 +1,38 @@
+load("//walleye/grpc:protobuf.bzl", "walleye_grpc_java_proto", "walleye_grpc_proto")
+load("//tools:defaults.bzl", "walleye_cc_binary")
+
+walleye_grpc_proto(
+    name = "interop_proto",
+    srcs = ["interop.proto"],
+    visibility = ["//visibility:private"],
+)
+
+walleye_grpc_java_proto(
+    name = "interop_java_proto",
+    srcs = ["interop.proto"],
+    holders = ["Interop"],
+    java_package = "walleye.interop",
+    messages = [
+        "MetadataRequest",
+        "SimpleRequest",
+        "SimpleResponse",
+        "StreamRequest",
+    ],
+    services = ["TestService"],
+    visibility = ["//visibility:public"],
+)
+
+walleye_cc_binary(
+    name = "java_interop_server",
+    srcs = ["java_interop_server.cc"],
+    visibility = ["//visibility:public"],
+    # Launched by //tools:java_interop_test.
+    deps = [
+        ":interop_proto",
+        "//walleye:runtime",
+        "//walleye/grpc:call",
+        "//walleye/grpc:server",
+        "//walleye/grpc:typed",
+        "@abseil-cpp//absl/strings",
+    ],
+)
