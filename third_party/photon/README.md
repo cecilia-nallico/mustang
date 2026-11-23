@@ -30,6 +30,13 @@ the Bazel build: `test/`, `examples/`, `doc/`, `tools/`, `CMake/`,
   — HTTP/1.x plus the HTTP/2 layer.
 - `net/curl.cpp`, `fs/httpfs/httpfs.cpp` — libcurl integration
   (`ENABLE_CURL`, curl from BCR).
+- `include/photon/common/alog.h`: the LOG_EVERY_T/LOG_EVERY_N/LOG_FIRST_N
+  macros are guarded with #ifndef; abseil logging (via protobuf) defines
+  same-named macros and -Wmacro-redefined fires otherwise.
+- `include/photon/common/estring.h`: the greedy templated
+  `estring::operator+` is constrained to `string_view`-convertible types;
+  without it, `const char* + enum` (used inside protobuf's parse_context.h)
+  is ambiguous under C++20.
 - `net/security-context/tls-stream.cpp` — TLS (OpenSSL 4 via curl's BCR
   backend).
 
@@ -41,6 +48,13 @@ Not compiled (present in tree for future use): `rpc/`, `blk/`, `kcp`,
 These differ from the pristine upstream commit; keep them when
 re-vendoring until upstream picks them up:
 
+- `include/photon/common/alog.h`: the LOG_EVERY_T/LOG_EVERY_N/LOG_FIRST_N
+  macros are guarded with #ifndef; abseil logging (via protobuf) defines
+  same-named macros and -Wmacro-redefined fires otherwise.
+- `include/photon/common/estring.h`: the greedy templated
+  `estring::operator+` is constrained to `string_view`-convertible types;
+  without it, `const char* + enum` (used inside protobuf's parse_context.h)
+  is ambiguous under C++20.
 - `net/security-context/tls-stream.cpp`: `TLSContextImpl(TLSVersion)` uses
   `TLS_method()` plus `SSL_CTX_set_{min,max}_proto_version` instead of the
   version-specific `TLSv1_1_method()`/`TLSv1_2_method()`, which were removed

@@ -196,8 +196,8 @@ absl::StatusOr<std::optional<std::string>> ClientCall::ReadMessage() {
   if (!st.ok()) {
     return st;
   }
-  if (response_end_) {
-    return std::nullopt;  // trailers-only: no messages
+  if (response_end_ && pending_.empty()) {
+    return std::nullopt;  // trailers-only, or stream fully consumed
   }
   while (true) {
     absl::string_view feed = pending_;
@@ -211,7 +211,7 @@ absl::StatusOr<std::optional<std::string>> ClientCall::ReadMessage() {
           Cancel();
           return DeadlineStatus();
         }
-        pending_.assign(feed.data(), feed.size());  // keep the remainder
+        pending_.erase(0, pending_.size() - feed.size());
         return std::move((*frame)->payload);
       }
     }

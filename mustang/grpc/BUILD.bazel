@@ -163,3 +163,18 @@ mustang_cc_test(
         "@grpc//:grpc++",
     ],
 )
+
+mustang_cc_library(
+    name = "typed",
+    srcs = ["typed.cc"],
+    hdrs = ["typed.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":call",
+        ":server",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/time",
+    ],
+)

@@ -728,17 +728,26 @@ struct __limit_first_n_every_t {
 // example: LOG_EVERY_T(10, LOG_INFO(....))
 // this log line will only log once in 10 secs.
 // useful for logs in repeated checking
+// mustang local modification (see README.md): guard the *_N/*_T variants so
+// TUs that include abseil logging first (protobuf does) do not get macro
+// redefinition errors.
+#ifndef LOG_EVERY_T
 #define LOG_EVERY_T(T, ...) __LOG_WITH_LIMIT(__limit_every_t<T>, __VA_ARGS__)
+#endif
 
 // output log once every N rounds.
 // example: LOG_EVERY_N(10, LOG_INFO(....))
 // this log line will only print 1 time every 10 rounds.
+#ifndef LOG_EVERY_N
 #define LOG_EVERY_N(N, ...) __LOG_WITH_LIMIT(__limit_every_n<N>, __VA_ARGS__)
+#endif
 
 // output log only first N rounds.
 // example: LOG_FIRST_N(10, LOG_INFO(....))
 // this log line will only print 10 rounds, after that, nothing will logged
+#ifndef LOG_FIRST_N
 #define LOG_FIRST_N(N, ...) __LOG_WITH_LIMIT(__limit_first_n<N>, __VA_ARGS__)
+#endif
 
 // output log only first N rounds every T seconds.
 // example: LOG_FIRST_N_EVERY_T(10, 60, LOG_INFO(....))

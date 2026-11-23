@@ -663,14 +663,21 @@ protected:
 
 template<typename T,
          typename = typename std::enable_if<!std::is_same<T, estring>::value>::type,
-         typename = typename std::enable_if<!std::is_same<T, std::string>::value>::type>
+         typename = typename std::enable_if<!std::is_same<T, std::string>::value>::type,
+         // mustang local modification (see README.md): without the
+         // string_view convertibility constraint this greedy template
+         // makes `const char* + enum` ambiguous in protobuf's headers.
+         typename = typename std::enable_if<
+             std::is_convertible<const T&, std::string_view>::value>::type>
 inline estring operator+(const estring& s, const T& rhs)
 {
     return estring(s) += std::string_view(rhs);
 }
 template<typename T,
          typename = typename std::enable_if<!std::is_same<T, estring>::value>::type,
-         typename = typename std::enable_if<!std::is_same<T, std::string>::value>::type>
+         typename = typename std::enable_if<!std::is_same<T, std::string>::value>::type,
+         typename = typename std::enable_if<
+             std::is_convertible<const T&, std::string_view>::value>::type>
 inline estring operator+(const T& lhs, const estring& s)
 {
     return estring(lhs) += std::string_view(s);

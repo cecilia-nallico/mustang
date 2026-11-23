@@ -1,4 +1,5 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//tools:defaults.bzl", "mustang_cc_binary")
 
 exports_files(glob(["*.bzl"]))
 
@@ -6,4 +7,14 @@ sh_test(
     name = "mustang_e2e_test",
     srcs = ["mustang_e2e_test.sh"],
     data = ["//mustang"],
+)
+
+mustang_cc_binary(
+    name = "protoc_gen_mustang_grpc",
+    srcs = ["protoc_gen_mustang_grpc.cc"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@protobuf",
+        "@protobuf//src/google/protobuf/compiler:plugin",
+    ],
 )

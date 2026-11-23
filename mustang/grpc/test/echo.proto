@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package mustang.test;
+
+message Req {
+  string text = 1;
+  int32 n = 2;
+}
+
+message Resp {
+  string text = 1;
+}
+
+service Echo {
+  rpc Unary(Req) returns (Resp);
+  rpc ServerStream(Req) returns (stream Resp);
+  rpc ClientStream(stream Req) returns (Resp);
+  rpc Chat(stream Req) returns (stream Resp);
+}
