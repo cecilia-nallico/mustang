@@ -21,12 +21,8 @@
 
 namespace {
 
-using google::protobuf::Descriptor;
-using google::protobuf::FileDescriptor;
-using google::protobuf::MethodDescriptor;
-using google::protobuf::ServiceDescriptor;
 
-std::string CppType(const Descriptor* message) {
+std::string CppType(const google::protobuf::Descriptor* message) {
   // full_name() is dotted ("pkg.Outer.Inner"); C++ nesting uses "::".
   std::string out;
   for (char c : std::string(message->full_name())) {
@@ -39,7 +35,7 @@ std::string CppType(const Descriptor* message) {
   return out;
 }
 
-std::string MethodPath(const ServiceDescriptor* service, const MethodDescriptor* method) {
+std::string MethodPath(const google::protobuf::ServiceDescriptor* service, const google::protobuf::MethodDescriptor* method) {
   return std::string("/") + std::string(service->full_name()) + "/" + std::string(method->name());
 }
 
@@ -75,7 +71,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     return FEATURE_PROTO3_OPTIONAL;
   }
 
-  bool Generate(const FileDescriptor* file, const std::string& /*parameter*/,
+  bool Generate(const google::protobuf::FileDescriptor* file, const std::string& /*parameter*/,
                 google::protobuf::compiler::GeneratorContext* context,
                 std::string* /*error*/) const override {
     if (file->service_count() == 0) {
@@ -112,7 +108,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     source += ns.open + "\n";
 
     for (int i = 0; i < file->service_count(); i++) {
-      const ServiceDescriptor* service = file->service(i);
+      const google::protobuf::ServiceDescriptor* service = file->service(i);
       AppendService(service, &header, &source);
     }
 
@@ -132,14 +128,14 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     coded.WriteRaw(content.data(), static_cast<int>(content.size()));
   }
 
-  static void AppendService(const ServiceDescriptor* service, std::string* header, std::string* source) {
+  static void AppendService(const google::protobuf::ServiceDescriptor* service, std::string* header, std::string* source) {
     const std::string svc(service->name());
     // -- handler base class --
     *header += "class " + svc + "Handler {\n";
     *header += " public:\n";
     *header += "  virtual ~" + svc + "Handler() = default;\n";
     for (int m = 0; m < service->method_count(); m++) {
-      const MethodDescriptor* method = service->method(m);
+      const google::protobuf::MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
@@ -170,7 +166,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     *header += " public:\n";
     *header += "  explicit " + svc + "Stub(mustang::grpc::GrpcClient* client) : client_(client) {}\n\n";
     for (int m = 0; m < service->method_count(); m++) {
-      const MethodDescriptor* method = service->method(m);
+      const google::protobuf::MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
@@ -191,7 +187,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     *source += "void Register" + svc + "Service(mustang::grpc::GrpcServer* server, " + svc +
                "Handler* handler) {\n";
     for (int m = 0; m < service->method_count(); m++) {
-      const MethodDescriptor* method = service->method(m);
+      const google::protobuf::MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
@@ -247,7 +243,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
 
     // -- stub methods --
     for (int m = 0; m < service->method_count(); m++) {
-      const MethodDescriptor* method = service->method(m);
+      const google::protobuf::MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
@@ -270,7 +266,7 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     }
   }
 
-  static std::string MethodSignatureComment(const MethodDescriptor* method) {
+  static std::string MethodSignatureComment(const google::protobuf::MethodDescriptor* method) {
     std::string comment(method->input_type()->full_name());
     comment += method->client_streaming() ? " (stream)" : "";
     comment += " -> ";

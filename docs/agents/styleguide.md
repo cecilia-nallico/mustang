@@ -120,6 +120,8 @@ Always check nullability explicitly: `if (foo != nullptr)`, `if (foo == nullptr)
 
 Always use braces for `if` statements, even around one liner `if` statements.
 
+Never do `using` directives in either headers or implementation files: always fully qualified names.
+
 ### Namespace
 
 All headers start with `#pragma once`. Not old style header guards.

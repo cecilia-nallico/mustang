@@ -17,22 +17,20 @@ namespace mustang {
 namespace interop {
 namespace {
 
-using grpc::UnaryContext;
-
 class TestImpl : public TestServiceHandler {
  public:
-  absl::StatusOr<SimpleResponse> Unary(UnaryContext* /*ctx*/, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Unary(grpc::UnaryContext* /*ctx*/, const SimpleRequest& request) override {
     SimpleResponse response;
     response.set_text("echo:" + request.text());
     response.set_n(request.n());
     return response;
   }
 
-  absl::StatusOr<SimpleResponse> Fail(UnaryContext* /*ctx*/, const SimpleRequest& /*request*/) override {
+  absl::StatusOr<SimpleResponse> Fail(grpc::UnaryContext* /*ctx*/, const SimpleRequest& /*request*/) override {
     return absl::NotFoundError("café 100% missing ☕");
   }
 
-  absl::StatusOr<SimpleResponse> Slow(UnaryContext* /*ctx*/, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Slow(grpc::UnaryContext* /*ctx*/, const SimpleRequest& request) override {
     photon::thread_usleep(300 * 1000);
     SimpleResponse response;
     response.set_text("late:" + request.text());
@@ -90,7 +88,7 @@ class TestImpl : public TestServiceHandler {
     stream->Close(grpc::StatusCode::kOk);
   }
 
-  absl::StatusOr<SimpleResponse> Metadata(UnaryContext* ctx, const MetadataRequest& request) override {
+  absl::StatusOr<SimpleResponse> Metadata(grpc::UnaryContext* ctx, const MetadataRequest& request) override {
     std::string seen = "<missing>";
     for (const grpc::HeaderField& field : ctx->request_metadata()) {
       if (field.name == request.key()) {

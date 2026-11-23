@@ -21,14 +21,6 @@ namespace mustang {
 namespace grpc {
 namespace {
 
-using testing::FrameBytes;
-using testing::kFlagEndHeaders;
-using testing::kFlagEndStream;
-using testing::kPreface;
-using testing::kTypeHeaders;
-using testing::kTypeSettings;
-using testing::RawPeer;
-
 HeaderField H(std::string name, std::string value) { return HeaderField{std::move(name), std::move(value)}; }
 
 class GrpcTest : public ::testing::Test {
@@ -326,11 +318,11 @@ TEST_F(GrpcTest, NonGrpcContentTypeGetsHttp415) {
       peer_status = absl::InternalError("raw connect failed");
       return;
     }
-    RawPeer peer{sock};
-    absl::Status st = peer.Write(kPreface);
+    testing::RawPeer peer{sock};
+    absl::Status st = peer.Write(testing::kPreface);
     std::string block =
         *HpackEncode({H(":method", "POST"), H(":path", "/x/Y"), H("content-type", "text/plain"), H("te", "trailers")});
-    st.Update(peer.WriteFrame(kTypeHeaders, kFlagEndHeaders | kFlagEndStream, 1, block));
+    st.Update(peer.WriteFrame(testing::kTypeHeaders, testing::kFlagEndHeaders | testing::kFlagEndStream, 1, block));
     if (!st.ok()) {
       peer_status = st;
       return;
@@ -341,7 +333,7 @@ TEST_F(GrpcTest, NonGrpcContentTypeGetsHttp415) {
         peer_status = frame.status();
         return;
       }
-      if (frame->type == kTypeHeaders) {
+      if (frame->type == testing::kTypeHeaders) {
         auto fields = std::vector<HeaderField>();
         HpackDecoder decoder;
         if (!decoder.Decode(frame->payload, &fields).ok()) {
@@ -375,7 +367,7 @@ TEST_F(GrpcTest, MissingGrpcStatusSynthesizedFromHttp) {
   photon::thread* peer_thread = photon::thread_create11([&]() {
     auto* sock = listener->accept();
     ASSERT_NE(sock, nullptr);
-    RawPeer peer{sock};
+    testing::RawPeer peer{sock};
     absl::Status st = peer.ServerHandshake();
     if (!st.ok()) {
       return;
@@ -386,7 +378,7 @@ TEST_F(GrpcTest, MissingGrpcStatusSynthesizedFromHttp) {
       return;
     }
     std::string block = *HpackEncode({H(":status", "503")});
-    (void)peer.WriteFrame(kTypeHeaders, kFlagEndHeaders | kFlagEndStream, 1, block);
+    (void)peer.WriteFrame(testing::kTypeHeaders, testing::kFlagEndHeaders | testing::kFlagEndStream, 1, block);
   });
   photon::thread_enable_join(peer_thread, true);
 

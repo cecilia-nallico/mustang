@@ -20,8 +20,6 @@ namespace mustang {
 namespace grpc {
 namespace {
 
-using namespace testing;  // raw-peer frame helpers (test_util.h)
-
 class ConnectionTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -431,19 +429,19 @@ TEST_F(ConnectionTest, PingIsEchoed) {
       peer_status = st;
       return;
     }
-    st = peer.WriteFrame(kTypePing, 0, 0, "12345678");
+    st = peer.WriteFrame(testing::kTypePing, 0, 0, "12345678");
     if (!st.ok()) {
       peer_status = st;
       return;
     }
     // Skip the client's SETTINGS; expect a PING ACK with the same bytes.
     while (true) {
-      absl::StatusOr<RawPeer::Frame> frame = peer.ReadFrame();
+      absl::StatusOr<testing::RawPeer::Frame> frame = peer.ReadFrame();
       if (!frame.ok()) {
         peer_status = frame.status();
         return;
       }
-      if (frame->type == kTypePing && (frame->flags & kFlagAck) != 0) {
+      if (frame->type == testing::kTypePing && (frame->flags & testing::kFlagAck) != 0) {
         if (frame->payload != std::string("12345678")) {
           peer_status = absl::InternalError("ping payload mismatch");
         }
@@ -476,8 +474,8 @@ TEST_F(ConnectionTest, ContinuationFramesAreReassembled) {
       return;
     }
     // Split anywhere: first byte in HEADERS, rest in CONTINUATION.
-    st = peer.WriteFrame(kTypeHeaders, 0, 1, block->substr(0, 1));
-    st.Update(peer.WriteFrame(kTypeContinuation, kFlagEndHeaders, 1, block->substr(1)));
+    st = peer.WriteFrame(testing::kTypeHeaders, 0, 1, block->substr(0, 1));
+    st.Update(peer.WriteFrame(testing::kTypeContinuation, testing::kFlagEndHeaders, 1, block->substr(1)));
     if (!st.ok()) {
       peer_status = st;
     }
@@ -516,19 +514,19 @@ TEST_F(ConnectionTest, OversizeFrameGetsGoawayFrameSizeError) {
     std::string header(9, '\0');
     header[0] = static_cast<char>(20000 >> 16);
     header[1] = static_cast<char>(20000 >> 8);
-    header[3] = static_cast<char>(kTypeData);
+    header[3] = static_cast<char>(testing::kTypeData);
     st = peer.Write(header);
     if (!st.ok()) {
       peer_status = st;
       return;
     }
     while (true) {
-      absl::StatusOr<RawPeer::Frame> frame = peer.ReadFrame();
+      absl::StatusOr<testing::RawPeer::Frame> frame = peer.ReadFrame();
       if (!frame.ok()) {
         peer_status = frame.status();
         return;
       }
-      if (frame->type == kTypeGoaway) {
+      if (frame->type == testing::kTypeGoaway) {
         uint32_t code = (static_cast<uint32_t>(static_cast<unsigned char>(frame->payload[4])) << 24) |
                         (static_cast<uint32_t>(static_cast<unsigned char>(frame->payload[5])) << 16) |
                         (static_cast<uint32_t>(static_cast<unsigned char>(frame->payload[6])) << 8) |
@@ -564,12 +562,12 @@ TEST_F(ConnectionTest, PaddedDataIsStripped) {
       peer_status = block.status();
       return;
     }
-    st = peer.WriteFrame(kTypeHeaders, kFlagEndHeaders, 1, *block);
+    st = peer.WriteFrame(testing::kTypeHeaders, testing::kFlagEndHeaders, 1, *block);
     // DATA with 4 bytes of padding: pad-length byte + payload + 3 zeros.
     std::string payload(1, '\x03');
     payload += "data";
     payload += std::string(3, '\0');
-    st.Update(peer.WriteFrame(kTypeData, kFlagEndStream | 0x8 /* PADDED */, 1, payload));
+    st.Update(peer.WriteFrame(testing::kTypeData, testing::kFlagEndStream | 0x8 /* PADDED */, 1, payload));
     if (!st.ok()) {
       peer_status = st;
     }
@@ -603,12 +601,12 @@ TEST_F(ConnectionTest, SendRespectsPeerWindowsAndFrameSize) {
     // Handshake manually: read preface, read client SETTINGS, then reply
     // with tiny windows so the client must wait for WINDOW_UPDATEs.
     std::string preface;
-    absl::Status st = peer.ReadExact(&preface, sizeof(kPreface) - 1);
+    absl::Status st = peer.ReadExact(&preface, sizeof(testing::kPreface) - 1);
     if (!st.ok()) {
       peer_status = st;
       return;
     }
-    absl::StatusOr<RawPeer::Frame> client_settings = peer.ReadFrame();
+    absl::StatusOr<testing::RawPeer::Frame> client_settings = peer.ReadFrame();
     if (!client_settings.ok()) {
       peer_status = client_settings.status();
       return;
@@ -617,7 +615,7 @@ TEST_F(ConnectionTest, SendRespectsPeerWindowsAndFrameSize) {
     std::string settings(6, '\0');
     settings[1] = '\x04';
     settings[5] = '\x64';  // 100
-    st = peer.WriteFrame(kTypeSettings, 0, 0, settings);
+    st = peer.WriteFrame(testing::kTypeSettings, 0, 0, settings);
     if (!st.ok()) {
       peer_status = st;
       return;
@@ -627,12 +625,12 @@ TEST_F(ConnectionTest, SendRespectsPeerWindowsAndFrameSize) {
     uint32_t frames = 0;
     bool expect_end = false;
     while (!expect_end || received < 4096) {
-      absl::StatusOr<RawPeer::Frame> frame = peer.ReadFrame();
+      absl::StatusOr<testing::RawPeer::Frame> frame = peer.ReadFrame();
       if (!frame.ok()) {
         peer_status = frame.status();
         return;
       }
-      if (frame->type == kTypeData) {
+      if (frame->type == testing::kTypeData) {
         if (frame->payload.size() > 100 + 0) {
           // Frames can carry at most what the windows allowed.
           peer_status = absl::InternalError("frame above granted window");
@@ -640,12 +638,12 @@ TEST_F(ConnectionTest, SendRespectsPeerWindowsAndFrameSize) {
         }
         received += frame->payload.size();
         frames++;
-        expect_end = (frame->flags & kFlagEndStream) != 0;
+        expect_end = (frame->flags & testing::kFlagEndStream) != 0;
         // Grant another 100 bytes on stream 1 and the connection.
         std::string update(4, '\0');
         update[3] = '\x64';
-        st = peer.WriteFrame(kTypeWindowUpdate, 0, 0, update);
-        st.Update(peer.WriteFrame(kTypeWindowUpdate, 0, 1, update));
+        st = peer.WriteFrame(testing::kTypeWindowUpdate, 0, 0, update);
+        st.Update(peer.WriteFrame(testing::kTypeWindowUpdate, 0, 1, update));
         if (!st.ok()) {
           peer_status = st;
           return;

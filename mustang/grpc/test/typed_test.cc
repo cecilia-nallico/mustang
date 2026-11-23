@@ -26,18 +26,9 @@ namespace mustang {
 namespace test {
 namespace {
 
-using grpc::CallOptions;
-using grpc::CallResult;
-using grpc::GrpcClient;
-using grpc::GrpcServer;
-using grpc::ServerCall;
-using grpc::ServerStream;
-using grpc::StatusCode;
-using grpc::UnaryContext;
-
 class EchoImpl : public EchoHandler {
  public:
-  absl::StatusOr<Resp> Unary(UnaryContext* /*ctx*/, const Req& request) override {
+  absl::StatusOr<Resp> Unary(grpc::UnaryContext* /*ctx*/, const Req& request) override {
     Resp response;
     response.set_text("echo:" + request.text());
     return response;
@@ -51,7 +42,7 @@ class EchoImpl : public EchoHandler {
         return;
       }
     }
-    writer->Close(StatusCode::kOk);
+    writer->Close(grpc::StatusCode::kOk);
   }
 
   absl::StatusOr<Resp> ClientStream(grpc::ServerReader<Req>* reader) override {
@@ -59,7 +50,7 @@ class EchoImpl : public EchoHandler {
     while (true) {
       auto request = reader->Read();
       if (!request.ok()) {
-        return absl::Status(grpc::ToAbslCode(StatusCode::kInternal), "read failed");
+        return absl::Status(grpc::ToAbslCode(grpc::StatusCode::kInternal), "read failed");
       }
       if (!request->has_value()) {
         break;
@@ -75,7 +66,7 @@ class EchoImpl : public EchoHandler {
     while (true) {
       auto request = stream->Read();
       if (!request.ok()) {
-        stream->Close(StatusCode::kInternal, "read failed");
+        stream->Close(grpc::StatusCode::kInternal, "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -87,7 +78,7 @@ class EchoImpl : public EchoHandler {
         return;
       }
     }
-    stream->Close(StatusCode::kOk);
+    stream->Close(grpc::StatusCode::kOk);
   }
 };
 
@@ -99,7 +90,7 @@ class TypedGrpcTest : public ::testing::Test {
     runtime_.emplace(std::move(rt).value());
     RegisterEchoService(&server_, &impl_);
     ASSERT_TRUE(server_.Start(0).ok());
-    client_ = std::make_unique<GrpcClient>(server_.endpoint());
+    client_ = std::make_unique<grpc::GrpcClient>(server_.endpoint());
     ASSERT_TRUE(client_->Connect().ok());
     stub_ = std::make_unique<EchoStub>(client_.get());
   }
@@ -113,8 +104,8 @@ class TypedGrpcTest : public ::testing::Test {
 
   std::optional<Runtime> runtime_;
   EchoImpl impl_;
-  GrpcServer server_;
-  std::unique_ptr<GrpcClient> client_;
+  grpc::GrpcServer server_;
+  std::unique_ptr<grpc::GrpcClient> client_;
   std::unique_ptr<EchoStub> stub_;
 };
 
@@ -132,7 +123,7 @@ TEST_F(TypedGrpcTest, UnaryErrorMapsToAbslStatus) {
   ASSERT_TRUE(raw.ok());
   auto result = raw->Finish();
   ASSERT_TRUE(result.ok());
-  EXPECT_EQ(result->code, StatusCode::kUnimplemented);
+  EXPECT_EQ(result->code, grpc::StatusCode::kUnimplemented);
 }
 
 TEST_F(TypedGrpcTest, ServerStreaming) {
@@ -152,7 +143,7 @@ TEST_F(TypedGrpcTest, ServerStreaming) {
   EXPECT_FALSE(end->has_value());
   auto result = stream->Finish();
   ASSERT_TRUE(result.ok());
-  EXPECT_EQ(result->code, StatusCode::kOk);
+  EXPECT_EQ(result->code, grpc::StatusCode::kOk);
 }
 
 TEST_F(TypedGrpcTest, ClientStreamingAggregates) {
@@ -170,7 +161,7 @@ TEST_F(TypedGrpcTest, ClientStreamingAggregates) {
   EXPECT_EQ((*reply)->text(), "total:10");
   auto result = stream->Finish();
   ASSERT_TRUE(result.ok());
-  EXPECT_EQ(result->code, StatusCode::kOk);
+  EXPECT_EQ(result->code, grpc::StatusCode::kOk);
 }
 
 TEST_F(TypedGrpcTest, BidiChat) {
@@ -191,7 +182,7 @@ TEST_F(TypedGrpcTest, BidiChat) {
   EXPECT_FALSE(end->has_value());
   auto result = stream->Finish();
   ASSERT_TRUE(result.ok());
-  EXPECT_EQ(result->code, StatusCode::kOk);
+  EXPECT_EQ(result->code, grpc::StatusCode::kOk);
 }
 
 }  // namespace
