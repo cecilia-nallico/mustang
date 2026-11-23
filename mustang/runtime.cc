@@ -1,6 +1,6 @@
 #include "mustang/runtime.h"
 
-#include <cerrno>
+#include <errno.h>
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"

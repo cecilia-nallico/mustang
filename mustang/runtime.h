@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cstdint>
+#include <stdint.h>
 
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"

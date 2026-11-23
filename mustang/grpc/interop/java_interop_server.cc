@@ -18,51 +18,46 @@ namespace interop {
 namespace {
 
 using grpc::UnaryContext;
-// Alias: TestServiceHandler has a method named ServerStream, which would
-// shadow the class in parameter lists.
-template <typename W, typename R>
-using GrpcStream = grpc::ServerStream<W, R>;
 
 class TestImpl : public TestServiceHandler {
  public:
-  absl::StatusOr<SimpleResponse> Unary(UnaryContext& /*ctx*/, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Unary(UnaryContext* /*ctx*/, const SimpleRequest& request) override {
     SimpleResponse response;
     response.set_text("echo:" + request.text());
     response.set_n(request.n());
     return response;
   }
 
-  absl::StatusOr<SimpleResponse> Fail(UnaryContext& /*ctx*/, const SimpleRequest& /*request*/) override {
+  absl::StatusOr<SimpleResponse> Fail(UnaryContext* /*ctx*/, const SimpleRequest& /*request*/) override {
     return absl::NotFoundError("café 100% missing ☕");
   }
 
-  absl::StatusOr<SimpleResponse> Slow(UnaryContext& /*ctx*/, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Slow(UnaryContext* /*ctx*/, const SimpleRequest& request) override {
     photon::thread_usleep(300 * 1000);
     SimpleResponse response;
     response.set_text("late:" + request.text());
     return response;
   }
 
-  void ServerStream(GrpcStream<StreamRequest, SimpleResponse>& stream, const StreamRequest& request) override {
+  void ServerStream(grpc::ServerWriter<SimpleResponse>* writer, const StreamRequest& request) override {
     std::string filler(request.size() > 16 ? request.size() - 16 : 0, 'x');
     for (int i = 0; i < request.count(); i++) {
       SimpleResponse response;
       response.set_text(absl::StrCat(request.text(), i, ":", filler));
-      if (!stream.Write(response).ok()) {
+      if (!writer->Write(response).ok()) {
         return;
       }
     }
-    (void)stream.Close(grpc::StatusCode::kOk);
+    writer->Close(grpc::StatusCode::kOk);
   }
 
-  void ClientStream(GrpcStream<SimpleRequest, SimpleResponse>& stream) override {
+  absl::StatusOr<SimpleResponse> ClientStream(grpc::ServerReader<SimpleRequest>* reader) override {
     int count = 0;
     int total = 0;
     while (true) {
-      auto request = stream.Read();
+      auto request = reader->Read();
       if (!request.ok()) {
-        (void)stream.Close(grpc::StatusCode::kInternal, "read failed");
-        return;
+        return absl::Status(grpc::ToAbslCode(grpc::StatusCode::kInternal), "read failed");
       }
       if (!request->has_value()) {
         break;
@@ -73,15 +68,14 @@ class TestImpl : public TestServiceHandler {
     SimpleResponse response;
     response.set_text(absl::StrCat("count:", count, " total:", total));
     response.set_n(count);
-    (void)stream.Write(response);
-    (void)stream.Close(grpc::StatusCode::kOk);
+    return response;
   }
 
-  void Chat(GrpcStream<SimpleRequest, SimpleResponse>& stream) override {
+  void Chat(grpc::ServerStream<SimpleRequest, SimpleResponse>* stream) override {
     while (true) {
-      auto request = stream.Read();
+      auto request = stream->Read();
       if (!request.ok()) {
-        (void)stream.Close(grpc::StatusCode::kInternal, "read failed");
+        stream->Close(grpc::StatusCode::kInternal, "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -89,22 +83,22 @@ class TestImpl : public TestServiceHandler {
       }
       SimpleResponse response;
       response.set_text(">" + (*request)->text());
-      if (!stream.Write(response).ok()) {
+      if (!stream->Write(response).ok()) {
         return;
       }
     }
-    (void)stream.Close(grpc::StatusCode::kOk);
+    stream->Close(grpc::StatusCode::kOk);
   }
 
-  absl::StatusOr<SimpleResponse> Metadata(UnaryContext& ctx, const MetadataRequest& request) override {
+  absl::StatusOr<SimpleResponse> Metadata(UnaryContext* ctx, const MetadataRequest& request) override {
     std::string seen = "<missing>";
-    for (const grpc::HeaderField& field : ctx.request_metadata()) {
+    for (const grpc::HeaderField& field : ctx->request_metadata()) {
       if (field.name == request.key()) {
         seen = field.value;
       }
     }
     // Trailer metadata rides along with the framework-written trailers.
-    ctx.SetResponseMetadata({grpc::HeaderField{"resp-meta", "value-42"}});
+    ctx->SetResponseMetadata({grpc::HeaderField{"resp-meta", "value-42"}});
     SimpleResponse response;
     response.set_text("meta:" + seen);
     return response;
@@ -125,7 +119,7 @@ int main() {
   }
   mustang::interop::TestImpl impl;
   mustang::grpc::GrpcServer server;
-  mustang::interop::RegisterTestServiceService(server, &impl);
+  mustang::interop::RegisterTestServiceService(&server, &impl);
   if (!server.Start(0).ok()) {
     fprintf(stderr, "server start failed\n");
     return 1;

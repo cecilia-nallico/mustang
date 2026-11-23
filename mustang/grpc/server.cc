@@ -143,10 +143,13 @@ void GrpcServer::ServeStream(Connection* /*conn*/, Stream* stream) {
   }
 
   ServerCall call(stream, std::move(*headers), deadline, options_.max_message_size);
-  handler(call);
+  handler(&call);
   if (!call.finished()) {
     // Handlers must finish exactly once; enforce a sane fallback (R13).
-    (void)call.Finish(StatusCode::kInternal, "handler returned without finishing");
+    absl::Status st = call.Finish(StatusCode::kInternal, "handler returned without finishing");
+    if (!st.ok()) {
+      LOG_WARN("grpc: fallback finish failed: `", std::string(st.message()));
+    }
   }
   stream->Done();
 }

@@ -32,38 +32,34 @@ using grpc::GrpcClient;
 using grpc::GrpcServer;
 using grpc::ServerCall;
 using grpc::ServerStream;
-// The Echo service has a method named ServerStream; alias to avoid shadowing.
-template <typename W, typename R>
-using GrpcStream = ServerStream<W, R>;
 using grpc::StatusCode;
 using grpc::UnaryContext;
 
 class EchoImpl : public EchoHandler {
  public:
-  absl::StatusOr<Resp> Unary(UnaryContext& /*ctx*/, const Req& request) override {
+  absl::StatusOr<Resp> Unary(UnaryContext* /*ctx*/, const Req& request) override {
     Resp response;
     response.set_text("echo:" + request.text());
     return response;
   }
 
-  void ServerStream(GrpcStream<Req, Resp>& stream, const Req& request) override {
+  void ServerStream(grpc::ServerWriter<Resp>* writer, const Req& request) override {
     for (int i = 0; i < request.n(); i++) {
       Resp response;
       response.set_text(absl::StrCat(request.text(), i));
-      if (!stream.Write(response).ok()) {
+      if (!writer->Write(response).ok()) {
         return;
       }
     }
-    (void)stream.Close(StatusCode::kOk);
+    writer->Close(StatusCode::kOk);
   }
 
-  void ClientStream(GrpcStream<Req, Resp>& stream) override {
+  absl::StatusOr<Resp> ClientStream(grpc::ServerReader<Req>* reader) override {
     int total = 0;
     while (true) {
-      auto request = stream.Read();
+      auto request = reader->Read();
       if (!request.ok()) {
-        (void)stream.Close(grpc::ToGrpcCode(request.status().code()), "read failed");
-        return;
+        return absl::Status(grpc::ToAbslCode(StatusCode::kInternal), "read failed");
       }
       if (!request->has_value()) {
         break;
@@ -72,15 +68,14 @@ class EchoImpl : public EchoHandler {
     }
     Resp response;
     response.set_text(absl::StrCat("total:", total));
-    (void)stream.Write(response);
-    (void)stream.Close(StatusCode::kOk);
+    return response;
   }
 
-  void Chat(GrpcStream<Req, Resp>& stream) override {
+  void Chat(grpc::ServerStream<Req, Resp>* stream) override {
     while (true) {
-      auto request = stream.Read();
+      auto request = stream->Read();
       if (!request.ok()) {
-        (void)stream.Close(grpc::ToGrpcCode(request.status().code()), "read failed");
+        stream->Close(StatusCode::kInternal, "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -88,11 +83,11 @@ class EchoImpl : public EchoHandler {
       }
       Resp response;
       response.set_text(">" + (*request)->text());
-      if (!stream.Write(response).ok()) {
+      if (!stream->Write(response).ok()) {
         return;
       }
     }
-    (void)stream.Close(StatusCode::kOk);
+    stream->Close(StatusCode::kOk);
   }
 };
 
@@ -102,11 +97,11 @@ class TypedGrpcTest : public ::testing::Test {
     auto rt = Runtime::Create(RuntimeOptions{});
     ASSERT_TRUE(rt.ok());
     runtime_.emplace(std::move(rt).value());
-    RegisterEchoService(server_, &impl_);
+    RegisterEchoService(&server_, &impl_);
     ASSERT_TRUE(server_.Start(0).ok());
     client_ = std::make_unique<GrpcClient>(server_.endpoint());
     ASSERT_TRUE(client_->Connect().ok());
-    stub_ = std::make_unique<EchoStub>(*client_);
+    stub_ = std::make_unique<EchoStub>(client_.get());
   }
   void TearDown() override {
     // Photon objects must die before the runtime.

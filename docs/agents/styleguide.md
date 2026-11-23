@@ -109,6 +109,11 @@ Non-null short lived const parameters are const references.
 If you need to keep a copy of the address: pass it as a const pointer instead.
 Out parameters are non-const pointers.
 
+Never take non-const reference parameters: an object the callee calls into or
+mutates through (contexts, streams, clients, servers) is passed as a non-const
+pointer. This makes mutation and ownership visible at call sites
+(`server.Register(handler)` vs `Serve(&server)`).
+
 ### Mundane
 
 Always check nullability explicitly: `if (foo != nullptr)`, `if (foo == nullptr)`.

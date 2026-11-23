@@ -37,3 +37,7 @@ service TestService {
 }
 
 // regen
+
+// regen: typed stream API
+
+// regen2

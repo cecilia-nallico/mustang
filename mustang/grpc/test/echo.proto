@@ -19,3 +19,7 @@ service Echo {
 }
 
 // regen
+
+// regen: typed stream API
+
+// regen2

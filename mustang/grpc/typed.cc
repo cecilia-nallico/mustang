@@ -1,5 +1,9 @@
 #include "mustang/grpc/typed.h"
 
+#include "absl/strings/str_cat.h"
+
+#include "mustang/photon_headers.h"
+
 namespace mustang {
 namespace grpc {
 
@@ -83,6 +87,15 @@ StatusCode ToGrpcCode(absl::StatusCode code) {
       break;
   }
   return StatusCode::kUnknown;
+}
+
+void FinishQuietly(ServerCall* call, StatusCode code, const std::string& message, std::vector<HeaderField> metadata) {
+  absl::Status st = call->Finish(code, message, std::move(metadata));
+  if (!st.ok()) {
+    // Transport-level failure while writing final trailers: the call is
+    // over either way, log and move on.
+    LOG_WARN("grpc: finishing call failed: `", std::string(st.message()));
+  }
 }
 
 absl::Status ToAbslStatus(const CallResult& result) {

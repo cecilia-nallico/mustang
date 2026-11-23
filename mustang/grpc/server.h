@@ -24,7 +24,7 @@ struct GrpcServerOptions {
 // accepted socket, one photon coroutine per RPC stream.
 class GrpcServer {
  public:
-  using Handler = std::function<void(ServerCall&)>;
+  using Handler = std::function<void(ServerCall*)>;
 
   explicit GrpcServer(GrpcServerOptions options = GrpcServerOptions());
   ~GrpcServer();

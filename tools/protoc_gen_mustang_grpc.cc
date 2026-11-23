@@ -143,27 +143,32 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
-      const std::string stream = "mustang::grpc::ServerStream<" + in + ", " + out + ">";
       *header += "  // " + MethodSignatureComment(method) + "\n";
       if (!method->client_streaming() && !method->server_streaming()) {
         // Unary: the framework writes the response or the error status.
         *header += "  virtual absl::StatusOr<" + out + "> " + mname +
-                   "(mustang::grpc::UnaryContext& ctx, const " + in + "& request) = 0;\n";
+                   "(mustang::grpc::UnaryContext* ctx, const " + in + "& request) = 0;\n";
       } else if (!method->client_streaming()) {
-        *header += "  virtual void " + mname + "(" + stream + "& stream, const " + in +
-                   "& request) = 0;\n";
+        // Server-streaming: request pre-read; the stream only writes.
+        *header += "  virtual void " + mname + "(mustang::grpc::ServerWriter<" + out +
+                   ">* writer, const " + in + "& request) = 0;\n";
+      } else if (!method->server_streaming()) {
+        // Client-streaming: read-only stream; framework writes the reply.
+        *header += "  virtual absl::StatusOr<" + out + "> " + mname + "(mustang::grpc::ServerReader<" +
+                   in + ">* reader) = 0;\n";
       } else {
-        *header += "  virtual void " + mname + "(" + stream + "& stream) = 0;\n";
+        *header += "  virtual void " + mname + "(mustang::grpc::ServerStream<" + in + ", " + out +
+                   ">* stream) = 0;\n";
       }
     }
     *header += "};\n\n";
-    *header += "void Register" + svc + "Service(mustang::grpc::GrpcServer& server, " + svc +
+    *header += "void Register" + svc + "Service(mustang::grpc::GrpcServer* server, " + svc +
                "Handler* handler);\n\n";
 
     // -- stub class --
     *header += "class " + svc + "Stub {\n";
     *header += " public:\n";
-    *header += "  explicit " + svc + "Stub(mustang::grpc::GrpcClient& client) : client_(client) {}\n\n";
+    *header += "  explicit " + svc + "Stub(mustang::grpc::GrpcClient* client) : client_(client) {}\n\n";
     for (int m = 0; m < service->method_count(); m++) {
       const MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
@@ -180,50 +185,61 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
         *header += "  " + typed + " " + mname + "(mustang::grpc::CallOptions options = {});\n";
       }
     }
-    *header += "\n private:\n  mustang::grpc::GrpcClient& client_;\n};\n\n";
+    *header += "\n private:\n  mustang::grpc::GrpcClient* client_;\n};\n\n";
 
     // -- registration --
-    *source += "void Register" + svc + "Service(mustang::grpc::GrpcServer& server, " + svc +
+    *source += "void Register" + svc + "Service(mustang::grpc::GrpcServer* server, " + svc +
                "Handler* handler) {\n";
     for (int m = 0; m < service->method_count(); m++) {
       const MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
       const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
-      const std::string stream = "mustang::grpc::ServerStream<" + in + ", " + out + ">";
-      *source += "  server.Register(\"" + MethodPath(service, method) +
-                 "\", [handler](mustang::grpc::ServerCall& call) {\n";
+      *source += "  server->Register(\"" + MethodPath(service, method) +
+                 "\", [handler](mustang::grpc::ServerCall* call) {\n";
       if (!method->client_streaming() && !method->server_streaming()) {
         // Unary: framework reads the request, calls the handler, writes
         // the response or the mapped error status (+ response metadata).
         *source += "    absl::StatusOr<" + in + "> request = mustang::grpc::ReadOne<" + in + ">(call);\n";
         *source += "    if (!request.ok()) {\n";
-        *source += "      (void)call.Finish(mustang::grpc::StatusCode::kInternal,\n";
-        *source += "                           std::string(request.status().message()));\n";
+        *source += "      mustang::grpc::FinishQuietly(call, mustang::grpc::StatusCode::kInternal,\n";
+        *source += "                                 std::string(request.status().message()));\n";
         *source += "      return;\n    }\n";
         *source += "    mustang::grpc::UnaryContext ctx(call);\n";
-        *source += "    absl::StatusOr<" + out + "> response = handler->" + mname + "(ctx, *request);\n";
+        *source += "    absl::StatusOr<" + out + "> response = handler->" + mname + "(&ctx, *request);\n";
         *source += "    if (!response.ok()) {\n";
-        *source += "      (void)call.Finish(mustang::grpc::ToGrpcCode(response.status().code()),\n";
-        *source += "                           std::string(response.status().message()),\n";
-        *source += "                           ctx.TakeResponseMetadata());\n";
+        *source += "      mustang::grpc::FinishQuietly(call, mustang::grpc::ToGrpcCode(response.status().code()),\n";
+        *source += "                                 std::string(response.status().message()),\n";
+        *source += "                                 ctx.TakeResponseMetadata());\n";
         *source += "      return;\n    }\n";
         *source += "    if (!mustang::grpc::WriteMessage(call, *response).ok()) {\n";
         *source += "      return;\n    }\n";
-        *source += "    (void)call.Finish(mustang::grpc::StatusCode::kOk, \"\",\n";
-        *source += "                         ctx.TakeResponseMetadata());\n";
+        *source += "    mustang::grpc::FinishQuietly(call, mustang::grpc::StatusCode::kOk, \"\",\n";
+        *source += "                               ctx.TakeResponseMetadata());\n";
+      } else if (!method->client_streaming()) {
+        // Server-streaming: request pre-read, handler writes + closes.
+        *source += "    absl::StatusOr<" + in + "> request = mustang::grpc::ReadOne<" + in + ">(call);\n";
+        *source += "    if (!request.ok()) {\n";
+        *source += "      mustang::grpc::FinishQuietly(call, mustang::grpc::StatusCode::kInternal,\n";
+        *source += "                                 std::string(request.status().message()));\n";
+        *source += "      return;\n    }\n";
+        *source += "    mustang::grpc::ServerWriter<" + out + "> writer(call);\n";
+        *source += "    handler->" + mname + "(&writer, *request);\n";
+      } else if (!method->server_streaming()) {
+        // Client-streaming: handler reads, returns the single response.
+        *source += "    mustang::grpc::ServerReader<" + in + "> reader(call);\n";
+        *source += "    absl::StatusOr<" + out + "> response = handler->" + mname + "(&reader);\n";
+        *source += "    if (!response.ok()) {\n";
+        *source += "      mustang::grpc::FinishQuietly(call, mustang::grpc::ToGrpcCode(response.status().code()),\n";
+        *source += "                                 std::string(response.status().message()));\n";
+        *source += "      return;\n    }\n";
+        *source += "    if (!mustang::grpc::WriteMessage(call, *response).ok()) {\n";
+        *source += "      return;\n    }\n";
+        *source += "    mustang::grpc::FinishQuietly(call, mustang::grpc::StatusCode::kOk, \"\");\n";
       } else {
-        *source += "    " + stream + " stream(call);\n";
-        if (!method->client_streaming()) {
-          *source += "    absl::StatusOr<" + in + "> request = mustang::grpc::ReadOne<" + in + ">(call);\n";
-          *source += "    if (!request.ok()) {\n";
-          *source += "      (void)call.Finish(mustang::grpc::StatusCode::kInternal,\n";
-          *source += "                           std::string(request.status().message()));\n";
-          *source += "      return;\n    }\n";
-          *source += "    handler->" + mname + "(stream, *request);\n";
-        } else {
-          *source += "    handler->" + mname + "(stream);\n";
-        }
+        // Bidi: handler owns both directions and closes.
+        *source += "    mustang::grpc::ServerStream<" + in + ", " + out + "> stream(call);\n";
+        *source += "    handler->" + mname + "(&stream);\n";
       }
       *source += "  });\n";
     }

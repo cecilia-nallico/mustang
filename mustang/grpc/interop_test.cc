@@ -334,12 +334,12 @@ TEST_F(InteropTest, MustangClientDeadlineAgainstSlowGrpcServer) {
 // --- gRPC client -> mustang server ---
 
 TEST_F(InteropTest, GrpcClientCallsMustangServer) {
-  server_.Register("/test.Interop/Unary", [](ServerCall& call) {
-    auto message = call.ReadMessage();
+  server_.Register("/test.Interop/Unary", [](ServerCall* call) {
+    auto message = call->ReadMessage();
     ASSERT_TRUE(message.ok());
     ASSERT_TRUE(message->has_value());
-    (void)call.WriteMessage("echo:" + **message);
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->WriteMessage("echo:" + **message);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   GrpcGenericClient grpc_client(absl::StrCat("127.0.0.1:", server_.endpoint().port));
@@ -351,9 +351,9 @@ TEST_F(InteropTest, GrpcClientCallsMustangServer) {
 }
 
 TEST_F(InteropTest, GrpcClientSeesMustangErrorStatus) {
-  server_.Register("/test.Interop/Fail", [](ServerCall& call) {
-    (void)call.ReadMessage();
-    (void)call.Finish(StatusCode::kInvalidArgument, "bad caf\xC3\xA9 input");
+  server_.Register("/test.Interop/Fail", [](ServerCall* call) {
+    (void)call->ReadMessage();
+    (void)call->Finish(StatusCode::kInvalidArgument, "bad caf\xC3\xA9 input");
   });
   ASSERT_TRUE(server_.Start(0).ok());
   GrpcGenericClient grpc_client(absl::StrCat("127.0.0.1:", server_.endpoint().port));
@@ -364,12 +364,12 @@ TEST_F(InteropTest, GrpcClientSeesMustangErrorStatus) {
 }
 
 TEST_F(InteropTest, GrpcClientReadsMustangServerStreaming) {
-  server_.Register("/test.Interop/Stream", [](ServerCall& call) {
-    (void)call.ReadMessage();
+  server_.Register("/test.Interop/Stream", [](ServerCall* call) {
+    (void)call->ReadMessage();
     for (int i = 0; i < 3; i++) {
-      (void)call.WriteMessage(absl::StrCat("m", i));
+      (void)call->WriteMessage(absl::StrCat("m", i));
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   GrpcGenericClient grpc_client(absl::StrCat("127.0.0.1:", server_.endpoint().port));

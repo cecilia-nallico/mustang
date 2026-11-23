@@ -66,12 +66,12 @@ class ConnectedGrpcTest : public GrpcTest {
 // --- unary & streaming shapes ---
 
 TEST_F(ConnectedGrpcTest, UnaryEcho) {
-  server_.Register("/test.Echo/Unary", [](ServerCall& call) {
-    auto message = call.ReadMessage();
+  server_.Register("/test.Echo/Unary", [](ServerCall* call) {
+    auto message = call->ReadMessage();
     ASSERT_TRUE(message.ok());
     ASSERT_TRUE(message->has_value());
-    (void)call.WriteMessage("echo:" + **message);
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->WriteMessage("echo:" + **message);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -89,13 +89,13 @@ TEST_F(ConnectedGrpcTest, UnaryEcho) {
 }
 
 TEST_F(ConnectedGrpcTest, ServerStreaming) {
-  server_.Register("/test.Echo/ServerStream", [](ServerCall& call) {
-    (void)call.ReadMessage();  // single request
+  server_.Register("/test.Echo/ServerStream", [](ServerCall* call) {
+    (void)call->ReadMessage();  // single request
     for (int i = 0; i < 3; i++) {
-      (void)call.WriteMessage(absl::StrCat("m", i));
+      (void)call->WriteMessage(absl::StrCat("m", i));
       photon::thread_usleep(2000);
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -118,18 +118,18 @@ TEST_F(ConnectedGrpcTest, ServerStreaming) {
 }
 
 TEST_F(ConnectedGrpcTest, ClientStreamingAggregates) {
-  server_.Register("/test.Echo/ClientStream", [](ServerCall& call) {
+  server_.Register("/test.Echo/ClientStream", [](ServerCall* call) {
     std::string joined;
     while (true) {
-      auto message = call.ReadMessage();
+      auto message = call->ReadMessage();
       ASSERT_TRUE(message.ok());
       if (!message->has_value()) {
         break;
       }
       joined += **message;
     }
-    (void)call.WriteMessage(joined);
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->WriteMessage(joined);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -150,16 +150,16 @@ TEST_F(ConnectedGrpcTest, ClientStreamingAggregates) {
 }
 
 TEST_F(ConnectedGrpcTest, BidiEchoInterleaved) {
-  server_.Register("/test.Echo/Bidi", [](ServerCall& call) {
+  server_.Register("/test.Echo/Bidi", [](ServerCall* call) {
     while (true) {
-      auto message = call.ReadMessage();
+      auto message = call->ReadMessage();
       ASSERT_TRUE(message.ok());
       if (!message->has_value()) {
         break;
       }
-      ASSERT_TRUE(call.WriteMessage(">" + **message).ok());
+      ASSERT_TRUE(call->WriteMessage(">" + **message).ok());
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -182,7 +182,7 @@ TEST_F(ConnectedGrpcTest, BidiEchoInterleaved) {
 
 TEST_F(ConnectedGrpcTest, ErrorStatusRoundtripsWithPercentEncoding) {
   server_.Register("/test.Echo/Fail",
-                   [](ServerCall& call) { (void)call.Finish(StatusCode::kNotFound, "café % 100\n"); });
+                   [](ServerCall* call) { (void)call->Finish(StatusCode::kNotFound, "café % 100\n"); });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
 
@@ -208,14 +208,14 @@ TEST_F(ConnectedGrpcTest, UnknownMethodIsUnimplemented) {
 TEST_F(ConnectedGrpcTest, MetadataOrderAndDuplicatesSurvive) {
   std::vector<HeaderField> seen;
   std::string seen_path;
-  server_.Register("/test.Echo/Meta", [&](ServerCall& call) {
-    seen = call.request_metadata();
-    for (const HeaderField& field : call.request_metadata()) {
+  server_.Register("/test.Echo/Meta", [&](ServerCall* call) {
+    seen = call->request_metadata();
+    for (const HeaderField& field : call->request_metadata()) {
       if (field.name == ":path") {
         seen_path = field.value;
       }
     }
-    (void)call.Finish(StatusCode::kOk, "", {H("resp-bin", "AAAA"), H("resp", "v2")});
+    (void)call->Finish(StatusCode::kOk, "", {H("resp-bin", "AAAA"), H("resp", "v2")});
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -254,9 +254,9 @@ TEST_F(ConnectedGrpcTest, OversizeMessageIsResourceExhausted) {
   GrpcServerOptions options;
   options.max_message_size = 100;
   GrpcServer small_server(options);
-  small_server.Register("/test.Echo/Small", [](ServerCall& call) {
-    (void)call.ReadMessage();
-    (void)call.Finish(StatusCode::kOk);
+  small_server.Register("/test.Echo/Small", [](ServerCall* call) {
+    (void)call->ReadMessage();
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(small_server.Start(0).ok());
   GrpcClient client(small_server.endpoint());
@@ -275,10 +275,10 @@ TEST_F(ConnectedGrpcTest, OversizeMessageIsResourceExhausted) {
 // --- deadlines & cancellation (R4, R20) ---
 
 TEST_F(ConnectedGrpcTest, DeadlineExceededWhenServerTooSlow) {
-  server_.Register("/test.Echo/Slow", [](ServerCall& call) {
+  server_.Register("/test.Echo/Slow", [](ServerCall* call) {
     photon::thread_usleep(300 * 1000);
-    (void)call.WriteMessage("late");
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->WriteMessage("late");
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -292,11 +292,11 @@ TEST_F(ConnectedGrpcTest, DeadlineExceededWhenServerTooSlow) {
 
 TEST_F(ConnectedGrpcTest, ServerObservesClientCancel) {
   absl::Status handler_error = absl::OkStatus();
-  server_.Register("/test.Echo/Stuck", [&](ServerCall& call) {
+  server_.Register("/test.Echo/Stuck", [&](ServerCall* call) {
     photon::thread_usleep(100 * 1000);
-    auto message = call.ReadMessage();  // client reset in the meantime
+    auto message = call->ReadMessage();  // client reset in the meantime
     handler_error = message.status();
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
@@ -404,13 +404,13 @@ TEST_F(GrpcTest, MissingGrpcStatusSynthesizedFromHttp) {
 
 TEST_F(ConnectedGrpcTest, LargeMessagesFlowBothWays) {
   const std::string big(2 * 1024 * 1024, 'z');  // 2 MiB each way, R-H3
-  server_.Register("/test.Echo/Big", [&big](ServerCall& call) {
-    auto message = call.ReadMessage();
+  server_.Register("/test.Echo/Big", [&big](ServerCall* call) {
+    auto message = call->ReadMessage();
     ASSERT_TRUE(message.ok());
     ASSERT_TRUE(message->has_value());
     EXPECT_EQ((*message)->size(), big.size());
-    (void)call.WriteMessage(**message);
-    (void)call.Finish(StatusCode::kOk);
+    (void)call->WriteMessage(**message);
+    (void)call->Finish(StatusCode::kOk);
   });
   ASSERT_TRUE(server_.Start(0).ok());
   ConnectClient();
