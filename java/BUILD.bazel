@@ -1,0 +1,14 @@
+load("@rules_java//java:defs.bzl", "java_binary")
+
+java_binary(
+    name = "interop_client",
+    srcs = glob(["src/**/*.java"]),
+    main_class = "mustang.interop.InteropClient",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@maven//:com_google_protobuf_protobuf_java",
+        "@maven//:io_grpc_grpc_api",
+        "@maven//:io_grpc_grpc_netty",
+        "@maven//:io_grpc_grpc_stub",
+    ],
+)

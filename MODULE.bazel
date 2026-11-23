@@ -14,6 +14,23 @@ bazel_dep(name = "liburing", version = "2.15")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 bazel_dep(name = "protobuf", version = "36.2", dev_dependency = True)
+bazel_dep(name = "rules_java", version = "9.9.0", dev_dependency = True)
+bazel_dep(name = "rules_jvm_external", version = "6.9", dev_dependency = True)
+
+# Official gRPC Java client as Maven artifacts (the consumer-correct way;
+# building grpc-java from source via the BCR module drags in conflicting
+# maven universes from its android deps).
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    artifacts = [
+        "com.google.protobuf:protobuf-java:4.32.0",
+        "io.grpc:grpc-api:1.84.0",
+        "io.grpc:grpc-netty:1.84.0",
+        "io.grpc:grpc-stub:1.84.0",
+    ],
+)
+use_repo(maven, "maven")
+
 bazel_dep(name = "rules_proto", version = "7.1.0", dev_dependency = True)
 
 bazel_dep(name = "rules_cc", version = "0.2.28")

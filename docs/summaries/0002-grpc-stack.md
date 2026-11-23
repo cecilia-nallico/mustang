@@ -32,11 +32,28 @@ reused from photon master.
   client should map post-deadline transport failure to DEADLINE_EXCEEDED.
 - gRPC percent-encoding keeps space unreserved (unlike URI encoding).
 
+## Java compliance suite
+
+`java/` + `//tools:java_interop_test`: the **official gRPC Java client**
+(1.84, Maven artifacts via rules_jvm_external — building grpc-java from
+BCR source drags in conflicting maven universes from its android deps)
+runs 12 scenarios against a mustang server started from the new
+`mustang.interop.TestService` proto (generated through our own plugin):
+unary, 1MiB payloads, NOT_FOUND with unicode percent-encoded message,
+deadline (enforced within ~50ms), server-stream + 4MiB flow-control
+stream, client-stream aggregate, interleaved bidi, metadata roundtrip via
+request headers + response trailers, UNIMPLEMENTED, cancel-in-flight →
+CANCELLED, and 8-thread mixed concurrency. No Java codegen: byte[]
+marshaller + hand-rolled proto3 wire format, mirroring the C++ generic
+interop. Protobuf-first include order matters (abseil logging macros vs
+photon alog — see photon README).
+
 ## Try it
 
 ```bash
 bazel test //mustang/grpc:all          # 4 test targets, loopback + unit
-bazel test //mustang/grpc:interop_test  # vs real gRPC C++ (needs network once for deps)
+bazel test //mustang/grpc:interop_test   # vs real gRPC C++ (needs network once for deps)
+bazel test //tools:java_interop_test    # vs official gRPC Java client (JDK 17)
 ```
 
 ## Next (M5+)

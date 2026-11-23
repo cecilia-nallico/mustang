@@ -18,3 +18,13 @@ mustang_cc_binary(
         "@protobuf//src/google/protobuf/compiler:plugin",
     ],
 )
+
+sh_test(
+    name = "java_interop_test",
+    timeout = "long",
+    srcs = ["java_interop_test.sh"],
+    data = [
+        "//java:interop_client",
+        "//mustang/grpc/interop:java_interop_server",
+    ],
+)
