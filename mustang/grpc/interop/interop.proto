@@ -2,6 +2,9 @@ syntax = "proto3";
 
 package mustang.interop;
 
+option java_package = "mustang.interop";
+option java_multiple_files = true;
+
 message SimpleRequest {
   string text = 1;
   int32 n = 2;

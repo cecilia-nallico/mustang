@@ -6,9 +6,10 @@ java_binary(
     main_class = "mustang.interop.InteropClient",
     visibility = ["//visibility:public"],
     deps = [
-        "@maven//:com_google_protobuf_protobuf_java",
+        "//mustang/grpc/interop:interop_java_proto",
         "@maven//:io_grpc_grpc_api",
         "@maven//:io_grpc_grpc_netty",
+        "@maven//:io_grpc_grpc_protobuf",
         "@maven//:io_grpc_grpc_stub",
     ],
 )

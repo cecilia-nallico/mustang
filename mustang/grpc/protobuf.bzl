@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_java//java:defs.bzl", "java_library")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 
 """mustang_grpc_proto: protoc codegen (C++ messages + mustang/photon stubs).
@@ -73,6 +74,63 @@ def mustang_grpc_proto(name, srcs, deps = [], visibility = None):
             "@abseil-cpp//absl/strings",
             "@abseil-cpp//absl/time",
             "@protobuf//:protobuf",
+        ],
+        visibility = visibility,
+    )
+
+"""mustang_grpc_java_proto: Java messages + OFFICIAL gRPC Java stubs.
+
+Runs protoc once with --java_out (messages) and the official
+protoc-gen-grpc-java plugin (downloaded from Maven Central). The .proto
+must set java_package and java_multiple_files. genrule outputs must be
+declared up front, so expected message and service names are passed
+explicitly.
+"""
+
+def mustang_grpc_java_proto(name, srcs, java_package, messages, services, holders = [], visibility = None):
+    dir = java_package.replace(".", "/")
+
+    # protoc 36 emits <Message>.java + <Message>OrBuilder.java per
+    # message, a <Proto>OuterClass holder, and the official plugin's
+    # <Service>Grpc.java. The outer holder is requested by name
+    # (outer_class) since it has no OrBuilder companion.
+    outs = []
+    for m in messages:
+        outs += [dir + "/" + m + ".java", dir + "/" + m + "OrBuilder.java"]
+    outs += [dir + "/" + h + ".java" for h in holders]
+    outs += [dir + "/" + s + "Grpc.java" for s in services]
+
+    native.genrule(
+        name = name + "_gen",
+        srcs = srcs,
+        outs = outs,
+        tools = [
+            "@protobuf//:protoc",
+            "@protoc_gen_grpc_java//:protoc-gen-grpc-java",
+        ],
+        cmd = """
+            set -e
+            for f in $(SRCS); do
+                d=$$(dirname $$f)
+                $(location @protobuf//:protoc) \
+                    --java_out=$(@D) \
+                    --plugin=protoc-gen-grpc-java=$(location @protoc_gen_grpc_java//:protoc-gen-grpc-java) \
+                    --grpc-java_out=$(@D) \
+                    --proto_path=$$d $$f
+            done
+        """,
+    )
+
+    java_library(
+        name = name,
+        srcs = [name + "_gen"],
+        deps = [
+            # The official plugin's *FutureStub references Guava futures.
+            "@maven//:com_google_guava_guava",
+            "@maven//:com_google_protobuf_protobuf_java",
+            "@maven//:io_grpc_grpc_api",
+            "@maven//:io_grpc_grpc_protobuf",
+            "@maven//:io_grpc_grpc_stub",
         ],
         visibility = visibility,
     )

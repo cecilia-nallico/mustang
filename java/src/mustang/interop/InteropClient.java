@@ -1,15 +1,13 @@
 // Compliance suite: the official gRPC Java client against the mustang
-// (PhotonLibOS) gRPC server. Uses MethodDescriptors with a byte-array
-// marshaller and hand-rolled proto3 wire encoding, so no Java codegen is
-// involved; everything on the wire is produced by the real grpc-java
-// stack (netty HTTP/2, HPACK, flow control, deadlines, cancellation).
+// (PhotonLibOS) gRPC server. Textbook usage: messages from protoc's
+// --java_out and stubs from the OFFICIAL protoc-gen-grpc-java plugin
+// (TestServiceGrpc); the wire traffic is produced entirely by grpc-java
+// (netty HTTP/2, HPACK, flow control, deadlines, cancel).
 //
 // Usage: InteropClient <host> <port>. Exits 0 iff every check passes.
 
 package mustang.interop;
 
-import com.google.protobuf.CodedInputStream;
-import com.google.protobuf.CodedOutputStream;
 import io.grpc.CallOptions;
 import io.grpc.ClientCall;
 import io.grpc.ConnectivityState;
@@ -20,10 +18,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ClientCalls;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
+import io.grpc.stub.StreamObserver;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -37,119 +32,15 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Runs the interop checks and prints PASS/FAIL per scenario. */
 public final class InteropClient {
 
-  private static final MethodDescriptor.Marshaller<byte[]> BYTES =
-      new MethodDescriptor.Marshaller<byte[]>() {
-        @Override
-        public InputStream stream(byte[] value) {
-          return new ByteArrayInputStream(value);
-        }
-
-        @Override
-        public byte[] parse(InputStream stream) {
-          try {
-            return stream.readAllBytes();
-          } catch (IOException e) {
-            throw new StatusRuntimeException(Status.INTERNAL.withDescription("read failed"));
-          }
-        }
-      };
-
-  private static final String SERVICE = "mustang.interop.TestService/";
-
-  private static final MethodDescriptor<byte[], byte[]> UNARY =
-      method("Unary", MethodDescriptor.MethodType.UNARY);
-  private static final MethodDescriptor<byte[], byte[]> FAIL =
-      method("Fail", MethodDescriptor.MethodType.UNARY);
-  private static final MethodDescriptor<byte[], byte[]> SLOW =
-      method("Slow", MethodDescriptor.MethodType.UNARY);
-  private static final MethodDescriptor<byte[], byte[]> SERVER_STREAM =
-      method("ServerStream", MethodDescriptor.MethodType.SERVER_STREAMING);
-  private static final MethodDescriptor<byte[], byte[]> CLIENT_STREAM =
-      method("ClientStream", MethodDescriptor.MethodType.CLIENT_STREAMING);
-  private static final MethodDescriptor<byte[], byte[]> CHAT =
-      method("Chat", MethodDescriptor.MethodType.BIDI_STREAMING);
-  private static final MethodDescriptor<byte[], byte[]> METADATA =
-      method("Metadata", MethodDescriptor.MethodType.UNARY);
-  private static final MethodDescriptor<byte[], byte[]> MISSING =
-      method("DoesNotExist", MethodDescriptor.MethodType.UNARY);
-
-  private static MethodDescriptor<byte[], byte[]> method(String name, MethodDescriptor.MethodType type) {
-    return MethodDescriptor.<byte[], byte[]>newBuilder()
-        .setType(type)
-        .setFullMethodName(SERVICE + name)
-        .setRequestMarshaller(BYTES)
-        .setResponseMarshaller(BYTES)
-        .build();
-  }
-
-  // --- hand-rolled proto3 wire format ---
-
-  private static byte[] simple(String text, int n) throws IOException {
-    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-    CodedOutputStream cos = CodedOutputStream.newInstance(bos);
-    if (!text.isEmpty()) {
-      cos.writeString(1, text);
-    }
-    if (n != 0) {
-      cos.writeInt32(2, n);
-    }
-    cos.flush();
-    return bos.toByteArray();
-  }
-
-  private static byte[] streamReq(int count, int size, String text) throws IOException {
-    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-    CodedOutputStream cos = CodedOutputStream.newInstance(bos);
-    if (count != 0) {
-      cos.writeInt32(1, count);
-    }
-    if (size != 0) {
-      cos.writeInt32(2, size);
-    }
-    if (!text.isEmpty()) {
-      cos.writeString(3, text);
-    }
-    cos.flush();
-    return bos.toByteArray();
-  }
-
-  private static byte[] metadataReq(String key, String value) throws IOException {
-    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-    CodedOutputStream cos = CodedOutputStream.newInstance(bos);
-    cos.writeString(1, key);
-    cos.writeString(2, value);
-    cos.flush();
-    return bos.toByteArray();
-  }
-
-  private static final class Resp {
-    String text = "";
-    int n;
-
-    static Resp parse(byte[] bytes) throws IOException {
-      Resp r = new Resp();
-      CodedInputStream in = CodedInputStream.newInstance(bytes);
-      while (!in.isAtEnd()) {
-        int tag = in.readTag();
-        if (tag == 10) {
-          r.text = in.readString();
-        } else if (tag == 16) {
-          r.n = in.readInt32();
-        } else {
-          in.skipField(tag);
-        }
-      }
-      return r;
-    }
-  }
-
-  // --- harness ---
-
   private final ManagedChannel channel;
+  private final TestServiceGrpc.TestServiceBlockingStub blocking;
+  private final TestServiceGrpc.TestServiceStub async;
   private int failures = 0;
 
   private InteropClient(ManagedChannel channel) {
     this.channel = channel;
+    this.blocking = TestServiceGrpc.newBlockingStub(channel);
+    this.async = TestServiceGrpc.newStub(channel);
   }
 
   private void check(String name, Runnable scenario) {
@@ -174,31 +65,30 @@ public final class InteropClient {
     }
   }
 
-  // --- scenarios ---
+  // --- scenarios, all through generated messages + generated stub ---
 
-  private void unaryEcho() throws IOException {
-    byte[] reply =
-        ClientCalls.blockingUnaryCall(channel, UNARY, CallOptions.DEFAULT, simple("hello java", 42));
-    Resp r = Resp.parse(reply);
-    requireEq("echo:hello java", r.text, "unary text");
-    requireEq(42, r.n, "unary n");
+  private void unaryEcho() {
+    SimpleResponse reply =
+        blocking.unary(SimpleRequest.newBuilder().setText("hello java").setN(42).build());
+    requireEq("echo:hello java", reply.getText(), "unary text");
+    requireEq(42, reply.getN(), "unary n");
   }
 
-  private void unaryLargePayload() throws IOException {
+  private void unaryLargePayload() {
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < 1024 * 1024; i++) {
       sb.append('a' + (i % 26));
     }
     String big = sb.toString();
-    byte[] reply = ClientCalls.blockingUnaryCall(channel, UNARY, CallOptions.DEFAULT, simple(big, 7));
-    Resp r = Resp.parse(reply);
-    requireEq("echo:" + big, r.text, "large payload echo");
-    requireEq(7, r.n, "large payload n");
+    SimpleResponse reply =
+        blocking.unary(SimpleRequest.newBuilder().setText(big).setN(7).build());
+    requireEq("echo:" + big, reply.getText(), "large payload echo");
+    requireEq(7, reply.getN(), "large payload n");
   }
 
-  private void unaryErrorStatus() throws IOException {
+  private void unaryErrorStatus() {
     try {
-      ClientCalls.blockingUnaryCall(channel, FAIL, CallOptions.DEFAULT, simple("x", 0));
+      blocking.fail(SimpleRequest.newBuilder().setText("x").build());
       throw new AssertionError("Fail call should have errored");
     } catch (StatusRuntimeException e) {
       requireEq(Status.Code.NOT_FOUND, e.getStatus().getCode(), "error code");
@@ -206,12 +96,11 @@ public final class InteropClient {
     }
   }
 
-  private void unaryDeadline() throws IOException {
-    CallOptions deadline =
-        CallOptions.DEFAULT.withDeadlineAfter(50, TimeUnit.MILLISECONDS);
+  private void unaryDeadline() {
     long start = System.nanoTime();
     try {
-      ClientCalls.blockingUnaryCall(channel, SLOW, deadline, simple("x", 0));
+      blocking.withDeadlineAfter(50, TimeUnit.MILLISECONDS)
+          .slow(SimpleRequest.newBuilder().setText("x").build());
       throw new AssertionError("Slow call should have timed out");
     } catch (StatusRuntimeException e) {
       requireEq(Status.Code.DEADLINE_EXCEEDED, e.getStatus().getCode(), "deadline code");
@@ -220,27 +109,27 @@ public final class InteropClient {
     }
   }
 
-  private void serverStreaming() throws IOException {
-    Iterator<byte[]> it =
-        ClientCalls.blockingServerStreamingCall(
-            channel, SERVER_STREAM, CallOptions.DEFAULT, streamReq(5, 32, "m"));
+  private void serverStreaming() {
+    Iterator<SimpleResponse> it =
+        blocking.serverStream(StreamRequest.newBuilder().setCount(5).setSize(32).setText("m").build());
     for (int i = 0; i < 5; i++) {
       require(it.hasNext(), "server stream message " + i);
-      Resp r = Resp.parse(it.next());
-      require(r.text.startsWith("m" + i + ":"), "server stream order at " + i + ": " + r.text);
+      SimpleResponse r = it.next();
+      require(r.getText().startsWith("m" + i + ":"), "server stream order at " + i + ": " + r.getText());
     }
     require(!it.hasNext(), "server stream end");
   }
 
-  private void serverStreamLarge() throws IOException {
+  private void serverStreamLarge() {
     // 32 x 128 KiB = 4 MiB total: exercises server->client flow control.
-    Iterator<byte[]> it =
-        ClientCalls.blockingServerStreamingCall(
-            channel, SERVER_STREAM, CallOptions.DEFAULT, streamReq(32, 128 * 1024, "big"));
+    Iterator<SimpleResponse> it =
+        blocking.serverStream(
+            StreamRequest.newBuilder().setCount(32).setSize(128 * 1024).setText("big").build());
     long bytes = 0;
     int count = 0;
     while (it.hasNext()) {
-      bytes += it.next().length;
+      SimpleResponse r = it.next();
+      bytes += r.getSerializedSize();
       count++;
     }
     requireEq(32, count, "large stream count");
@@ -249,14 +138,13 @@ public final class InteropClient {
 
   private void clientStreaming() throws Exception {
     CountDownLatch done = new CountDownLatch(1);
-    AtomicReference<byte[]> response = new AtomicReference<>();
+    AtomicReference<SimpleResponse> response = new AtomicReference<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
-    io.grpc.stub.StreamObserver<byte[]> requests =
-        ClientCalls.asyncClientStreamingCall(
-            channel.newCall(CLIENT_STREAM, CallOptions.DEFAULT),
-            new io.grpc.stub.StreamObserver<byte[]>() {
+    StreamObserver<SimpleRequest> requests =
+        async.clientStream(
+            new StreamObserver<SimpleResponse>() {
               @Override
-              public void onNext(byte[] value) {
+              public void onNext(SimpleResponse value) {
                 response.set(value);
               }
 
@@ -272,27 +160,25 @@ public final class InteropClient {
               }
             });
     for (int i = 1; i <= 10; i++) {
-      requests.onNext(simple("c" + i, i));
+      requests.onNext(SimpleRequest.newBuilder().setText("c" + i).setN(i).build());
     }
     requests.onCompleted();
     require(done.await(10, TimeUnit.SECONDS), "client streaming completed");
     if (error.get() != null) {
       throw new AssertionError("client streaming failed", error.get());
     }
-    Resp r = Resp.parse(response.get());
-    requireEq("count:10 total:55", r.text, "client streaming aggregate");
+    requireEq("count:10 total:55", response.get().getText(), "client streaming aggregate");
   }
 
   private void bidiChat() throws Exception {
     CountDownLatch done = new CountDownLatch(1);
-    List<byte[]> replies = new ArrayList<>();
+    List<SimpleResponse> replies = new ArrayList<>();
     AtomicReference<Throwable> error = new AtomicReference<>();
-    io.grpc.stub.StreamObserver<byte[]> requests =
-        ClientCalls.asyncBidiStreamingCall(
-            channel.newCall(CHAT, CallOptions.DEFAULT),
-            new io.grpc.stub.StreamObserver<byte[]>() {
+    StreamObserver<SimpleRequest> requests =
+        async.chat(
+            new StreamObserver<SimpleResponse>() {
               @Override
-              public void onNext(byte[] value) {
+              public void onNext(SimpleResponse value) {
                 synchronized (replies) {
                   replies.add(value);
                 }
@@ -310,7 +196,7 @@ public final class InteropClient {
               }
             });
     for (int i = 0; i < 10; i++) {
-      requests.onNext(simple("x" + i, 0));
+      requests.onNext(SimpleRequest.newBuilder().setText("x" + i).build());
       // Interleave: the reply for x_i should arrive before we send x_{i+2}.
       if (i >= 2) {
         long deadline = System.currentTimeMillis() + 5000;
@@ -331,25 +217,26 @@ public final class InteropClient {
     }
     requireEq(10, replies.size(), "bidi reply count");
     for (int i = 0; i < 10; i++) {
-      Resp r = Resp.parse(replies.get(i));
-      requireEq(">" + "x" + i, r.text, "bidi reply " + i);
+      requireEq(">x" + i, replies.get(i).getText(), "bidi reply " + i);
     }
   }
 
   private void metadataRoundtrip() throws Exception {
-    // Raw ClientCall: blocking calls do not expose trailers.
-    ClientCall<byte[], byte[]> call = channel.newCall(METADATA, CallOptions.DEFAULT);
+    // Raw ClientCall over the generated METHOD: blocking calls do not
+    // expose trailers.
+    ClientCall<MetadataRequest, SimpleResponse> call =
+        channel.newCall(TestServiceGrpc.getMetadataMethod(), CallOptions.DEFAULT);
     Metadata headers = new Metadata();
     Metadata.Key<String> custom = Metadata.Key.of("java-meta", Metadata.ASCII_STRING_MARSHALLER);
     headers.put(custom, "from-java");
     CountDownLatch done = new CountDownLatch(1);
-    AtomicReference<byte[]> message = new AtomicReference<>();
+    AtomicReference<SimpleResponse> message = new AtomicReference<>();
     AtomicReference<Status> status = new AtomicReference<>();
     AtomicReference<Metadata> trailers = new AtomicReference<>();
     call.start(
-        new ClientCall.Listener<byte[]>() {
+        new ClientCall.Listener<SimpleResponse>() {
           @Override
-          public void onMessage(byte[] value) {
+          public void onMessage(SimpleResponse value) {
             message.set(value);
           }
 
@@ -361,20 +248,29 @@ public final class InteropClient {
           }
         },
         headers);
-    call.sendMessage(metadataReq("java-meta", "from-java"));
+    call.sendMessage(MetadataRequest.newBuilder().setKey("java-meta").setValue("from-java").build());
     call.halfClose();
     call.request(1);
     require(done.await(10, TimeUnit.SECONDS), "metadata call completed");
     require(status.get().isOk(), "metadata call status: " + status.get());
-    Resp r = Resp.parse(message.get());
-    requireEq("meta:from-java", r.text, "server saw request metadata");
-    String reply = trailers.get().get(Metadata.Key.of("resp-meta", Metadata.ASCII_STRING_MARSHALLER));
+    requireEq("meta:from-java", message.get().getText(), "server saw request metadata");
+    String reply =
+        trailers.get().get(Metadata.Key.of("resp-meta", Metadata.ASCII_STRING_MARSHALLER));
     requireEq("value-42", reply, "response trailer metadata");
   }
 
-  private void unknownMethod() throws IOException {
+  private void unknownMethod() {
+    // A method the server does not implement: UNIMPLEMENTED trailers-only.
+    MethodDescriptor<SimpleRequest, SimpleResponse> missing =
+        MethodDescriptor.<SimpleRequest, SimpleResponse>newBuilder()
+            .setType(MethodDescriptor.MethodType.UNARY)
+            .setFullMethodName(TestServiceGrpc.getServiceDescriptor().getName() + "/DoesNotExist")
+            .setRequestMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(SimpleRequest.getDefaultInstance()))
+            .setResponseMarshaller(io.grpc.protobuf.ProtoUtils.marshaller(SimpleResponse.getDefaultInstance()))
+            .build();
     try {
-      ClientCalls.blockingUnaryCall(channel, MISSING, CallOptions.DEFAULT, simple("x", 0));
+      ClientCalls.blockingUnaryCall(
+          channel, missing, CallOptions.DEFAULT, SimpleRequest.newBuilder().setText("x").build());
       throw new AssertionError("missing method should be UNIMPLEMENTED");
     } catch (StatusRuntimeException e) {
       requireEq(Status.Code.UNIMPLEMENTED, e.getStatus().getCode(), "unknown method code");
@@ -382,11 +278,12 @@ public final class InteropClient {
   }
 
   private void cancelInFlight() throws Exception {
-    ClientCall<byte[], byte[]> call = channel.newCall(SLOW, CallOptions.DEFAULT);
+    ClientCall<SimpleRequest, SimpleResponse> call =
+        channel.newCall(TestServiceGrpc.getSlowMethod(), CallOptions.DEFAULT);
     CountDownLatch done = new CountDownLatch(1);
     AtomicReference<Status> status = new AtomicReference<>();
     call.start(
-        new ClientCall.Listener<byte[]>() {
+        new ClientCall.Listener<SimpleResponse>() {
           @Override
           public void onClose(Status s, Metadata trailers) {
             status.set(s);
@@ -394,7 +291,7 @@ public final class InteropClient {
           }
         },
         new Metadata());
-    call.sendMessage(simple("never-finish", 0));
+    call.sendMessage(SimpleRequest.newBuilder().setText("never-finish").build());
     call.halfClose();
     call.request(1);
     Thread.sleep(20);  // let the request reach the server
@@ -415,13 +312,13 @@ public final class InteropClient {
           () -> {
             try {
               for (int i = 0; i < 5; i++) {
-                byte[] reply =
-                    ClientCalls.blockingUnaryCall(
-                        channel, UNARY, CallOptions.DEFAULT, simple("t" + id + "i" + i, i));
-                require(Resp.parse(reply).text.startsWith("echo:t" + id), "concurrent unary");
-                Iterator<byte[]> it =
-                    ClientCalls.blockingServerStreamingCall(
-                        channel, SERVER_STREAM, CallOptions.DEFAULT, streamReq(3, 16, "c"));
+                SimpleResponse reply =
+                    blocking.unary(
+                        SimpleRequest.newBuilder().setText("t" + id + "i" + i).setN(i).build());
+                require(reply.getText().startsWith("echo:t" + id), "concurrent unary");
+                Iterator<SimpleResponse> it =
+                    blocking.serverStream(
+                        StreamRequest.newBuilder().setCount(3).setSize(16).setText("c").build());
                 int count = 0;
                 while (it.hasNext()) {
                   it.next();
@@ -458,22 +355,21 @@ public final class InteropClient {
   }
 
   private void runAll() {
-    check("unaryEcho", unchecked(this::unaryEcho));
-    check("unaryLargePayload", unchecked(this::unaryLargePayload));
-    check("unaryErrorStatus", unchecked(this::unaryErrorStatus));
-    check("unaryDeadline", unchecked(this::unaryDeadline));
-    check("serverStreaming", unchecked(this::serverStreaming));
-    check("serverStreamLarge", unchecked(this::serverStreamLarge));
-    check("clientStreaming", unchecked(this::clientStreaming));
-    check("bidiChat", unchecked(this::bidiChat));
-    check("metadataRoundtrip", unchecked(this::metadataRoundtrip));
-    check("unknownMethod", unchecked(this::unknownMethod));
-    check("cancelInFlight", unchecked(this::cancelInFlight));
-    check("concurrentMixed", unchecked(this::concurrentMixed));
+    check("unaryEcho", this::unaryEcho);
+    check("unaryLargePayload", this::unaryLargePayload);
+    check("unaryErrorStatus", this::unaryErrorStatus);
+    check("unaryDeadline", this::unaryDeadline);
+    check("serverStreaming", this::serverStreaming);
+    check("serverStreamLarge", this::serverStreamLarge);
+    check("clientStreaming", () -> unchecked(this::clientStreaming));
+    check("bidiChat", () -> unchecked(this::bidiChat));
+    check("metadataRoundtrip", () -> unchecked(this::metadataRoundtrip));
+    check("unknownMethod", this::unknownMethod);
+    check("cancelInFlight", () -> unchecked(this::cancelInFlight));
+    check("concurrentMixed", () -> unchecked(this::concurrentMixed));
     System.out.println(failures == 0 ? "ALL PASS" : failures + " FAILURES");
   }
 
-  /** Runnable adapter for scenarios that throw checked exceptions. */
   private interface Scenario {
     void run() throws Exception;
   }
@@ -507,5 +403,4 @@ public final class InteropClient {
       channel.awaitTermination(5, TimeUnit.SECONDS);
     }
   }
-
 }
