@@ -31,32 +31,38 @@ using grpc::CallResult;
 using grpc::GrpcClient;
 using grpc::GrpcServer;
 using grpc::ServerCall;
+using grpc::ServerStream;
+// The Echo service has a method named ServerStream; alias to avoid shadowing.
+template <typename W, typename R>
+using GrpcStream = ServerStream<W, R>;
 using grpc::StatusCode;
+using grpc::UnaryContext;
 
 class EchoImpl : public EchoHandler {
  public:
-  void Unary(ServerCall& call, const Req& request) override {
+  absl::StatusOr<Resp> Unary(UnaryContext& /*ctx*/, const Req& request) override {
     Resp response;
     response.set_text("echo:" + request.text());
-    (void)grpc::WriteMessage(call, response);
-    (void)call.Finish(StatusCode::kOk);
+    return response;
   }
 
-  void ServerStream(ServerCall& call, const Req& request) override {
+  void ServerStream(GrpcStream<Req, Resp>& stream, const Req& request) override {
     for (int i = 0; i < request.n(); i++) {
       Resp response;
       response.set_text(absl::StrCat(request.text(), i));
-      (void)grpc::WriteMessage(call, response);
+      if (!stream.Write(response).ok()) {
+        return;
+      }
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Close(StatusCode::kOk);
   }
 
-  void ClientStream(ServerCall& call) override {
+  void ClientStream(GrpcStream<Req, Resp>& stream) override {
     int total = 0;
     while (true) {
-      auto request = grpc::ReadMessage<Req>(call);
+      auto request = stream.Read();
       if (!request.ok()) {
-        (void)call.Finish(StatusCode::kInternal, "read failed");
+        (void)stream.Close(grpc::ToGrpcCode(request.status().code()), "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -66,15 +72,15 @@ class EchoImpl : public EchoHandler {
     }
     Resp response;
     response.set_text(absl::StrCat("total:", total));
-    (void)grpc::WriteMessage(call, response);
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Write(response);
+    (void)stream.Close(StatusCode::kOk);
   }
 
-  void Chat(ServerCall& call) override {
+  void Chat(GrpcStream<Req, Resp>& stream) override {
     while (true) {
-      auto request = grpc::ReadMessage<Req>(call);
+      auto request = stream.Read();
       if (!request.ok()) {
-        (void)call.Finish(StatusCode::kInternal, "read failed");
+        (void)stream.Close(grpc::ToGrpcCode(request.status().code()), "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -82,9 +88,11 @@ class EchoImpl : public EchoHandler {
       }
       Resp response;
       response.set_text(">" + (*request)->text());
-      (void)grpc::WriteMessage(call, response);
+      if (!stream.Write(response).ok()) {
+        return;
+      }
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Close(StatusCode::kOk);
   }
 };
 

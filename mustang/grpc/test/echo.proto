@@ -17,3 +17,5 @@ service Echo {
   rpc ClientStream(stream Req) returns (Resp);
   rpc Chat(stream Req) returns (stream Resp);
 }
+
+// regen

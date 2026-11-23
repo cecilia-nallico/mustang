@@ -2,17 +2,13 @@
 // mustang.interop.TestService on an ephemeral port (printed as
 // "PORT <n>") until killed by the test harness.
 
-#include <cstdio>
-#include <memory>
-#include <string>
-
 // protobuf first: abseil logging macros must precede photon's (see
 // third_party/photon/README.md).
 #include "mustang/grpc/interop/interop.grpc.pb.h"
 
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 
-#include "mustang/grpc/call.h"
 #include "mustang/grpc/server.h"
 #include "mustang/grpc/typed.h"
 #include "mustang/runtime.h"
@@ -21,48 +17,51 @@ namespace mustang {
 namespace interop {
 namespace {
 
-using grpc::ServerCall;
-using grpc::StatusCode;
+using grpc::UnaryContext;
+// Alias: TestServiceHandler has a method named ServerStream, which would
+// shadow the class in parameter lists.
+template <typename W, typename R>
+using GrpcStream = grpc::ServerStream<W, R>;
 
 class TestImpl : public TestServiceHandler {
  public:
-  void Unary(ServerCall& call, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Unary(UnaryContext& /*ctx*/, const SimpleRequest& request) override {
     SimpleResponse response;
     response.set_text("echo:" + request.text());
     response.set_n(request.n());
-    (void)grpc::WriteMessage(call, response);
-    (void)call.Finish(StatusCode::kOk);
+    return response;
   }
 
-  void Fail(ServerCall& call, const SimpleRequest& /*request*/) override {
-    (void)call.Finish(StatusCode::kNotFound, "café 100% missing ☕");
+  absl::StatusOr<SimpleResponse> Fail(UnaryContext& /*ctx*/, const SimpleRequest& /*request*/) override {
+    return absl::NotFoundError("café 100% missing ☕");
   }
 
-  void Slow(ServerCall& call, const SimpleRequest& request) override {
+  absl::StatusOr<SimpleResponse> Slow(UnaryContext& /*ctx*/, const SimpleRequest& request) override {
     photon::thread_usleep(300 * 1000);
     SimpleResponse response;
     response.set_text("late:" + request.text());
-    (void)grpc::WriteMessage(call, response);
-    (void)call.Finish(StatusCode::kOk);
+    return response;
   }
 
-  void ServerStream(ServerCall& call, const StreamRequest& request) override {
+  void ServerStream(GrpcStream<StreamRequest, SimpleResponse>& stream, const StreamRequest& request) override {
     std::string filler(request.size() > 16 ? request.size() - 16 : 0, 'x');
     for (int i = 0; i < request.count(); i++) {
       SimpleResponse response;
       response.set_text(absl::StrCat(request.text(), i, ":", filler));
-      (void)grpc::WriteMessage(call, response);
+      if (!stream.Write(response).ok()) {
+        return;
+      }
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Close(grpc::StatusCode::kOk);
   }
 
-  void ClientStream(ServerCall& call) override {
+  void ClientStream(GrpcStream<SimpleRequest, SimpleResponse>& stream) override {
     int count = 0;
     int total = 0;
     while (true) {
-      auto request = grpc::ReadMessage<SimpleRequest>(call);
+      auto request = stream.Read();
       if (!request.ok()) {
-        (void)call.Finish(StatusCode::kInternal, "read failed");
+        (void)stream.Close(grpc::StatusCode::kInternal, "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -74,15 +73,15 @@ class TestImpl : public TestServiceHandler {
     SimpleResponse response;
     response.set_text(absl::StrCat("count:", count, " total:", total));
     response.set_n(count);
-    (void)grpc::WriteMessage(call, response);
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Write(response);
+    (void)stream.Close(grpc::StatusCode::kOk);
   }
 
-  void Chat(ServerCall& call) override {
+  void Chat(GrpcStream<SimpleRequest, SimpleResponse>& stream) override {
     while (true) {
-      auto request = grpc::ReadMessage<SimpleRequest>(call);
+      auto request = stream.Read();
       if (!request.ok()) {
-        (void)call.Finish(StatusCode::kInternal, "read failed");
+        (void)stream.Close(grpc::StatusCode::kInternal, "read failed");
         return;
       }
       if (!request->has_value()) {
@@ -90,23 +89,25 @@ class TestImpl : public TestServiceHandler {
       }
       SimpleResponse response;
       response.set_text(">" + (*request)->text());
-      (void)grpc::WriteMessage(call, response);
+      if (!stream.Write(response).ok()) {
+        return;
+      }
     }
-    (void)call.Finish(StatusCode::kOk);
+    (void)stream.Close(grpc::StatusCode::kOk);
   }
 
-  void Metadata(ServerCall& call, const MetadataRequest& request) override {
+  absl::StatusOr<SimpleResponse> Metadata(UnaryContext& ctx, const MetadataRequest& request) override {
     std::string seen = "<missing>";
-    for (const grpc::HeaderField& field : call.request_metadata()) {
+    for (const grpc::HeaderField& field : ctx.request_metadata()) {
       if (field.name == request.key()) {
         seen = field.value;
       }
     }
+    // Trailer metadata rides along with the framework-written trailers.
+    ctx.SetResponseMetadata({grpc::HeaderField{"resp-meta", "value-42"}});
     SimpleResponse response;
     response.set_text("meta:" + seen);
-    (void)grpc::WriteMessage(call, response);
-    grpc::HeaderField reply{"resp-meta", "value-42"};
-    (void)call.Finish(StatusCode::kOk, "", {reply});
+    return response;
   }
 };
 

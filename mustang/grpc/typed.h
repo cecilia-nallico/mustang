@@ -26,7 +26,56 @@ struct CallOptions {
 // gRPC status codes map 1:1 onto absl status codes (same semantics,
 // different numeric values).
 absl::StatusCode ToAbslCode(StatusCode code);
+StatusCode ToGrpcCode(absl::StatusCode code);
 absl::Status ToAbslStatus(const CallResult& result);
+
+// Context for unary handlers: request metadata, deadline, and response
+// metadata the framework merges into the trailers it writes. Handlers
+// return absl::StatusOr<Response>; the framework writes the response or
+// the error status — handlers never touch WriteMessage themselves.
+class UnaryContext {
+ public:
+  explicit UnaryContext(ServerCall& call) : call_(call) {}
+
+  const std::vector<HeaderField>& request_metadata() const { return call_.request_metadata(); }
+  absl::optional<absl::Time> deadline() const { return call_.deadline(); }
+  // Metadata to attach to the final trailers (grpc-status still added by
+  // the framework).
+  void SetResponseMetadata(std::vector<HeaderField> metadata) { response_metadata_ = std::move(metadata); }
+
+  // Framework-internal (generated dispatcher): trailers to merge in.
+  std::vector<HeaderField> TakeResponseMetadata() { return std::move(response_metadata_); }
+
+ private:
+  ServerCall& call_;
+  std::vector<HeaderField> response_metadata_;
+};
+
+// Typed server-side stream for streaming RPCs: read requests, write
+// responses, close exactly once. The framework sends nothing on its own.
+template <typename W, typename R>
+class ServerStream {
+ public:
+  explicit ServerStream(ServerCall& call) : call_(call) {}
+
+  // One request message; std::nullopt = client half-closed.
+  absl::StatusOr<std::optional<W>> Read() { return ReadMessage<W>(call_); }
+  // One response message.
+  absl::Status Write(const R& message) { return WriteMessage(call_, message); }
+  // Ends the RPC. absl::Status overload maps codes 1:1.
+  absl::Status Close(absl::Status status) {
+    return call_.Finish(ToGrpcCode(status.code()), std::string(status.message()));
+  }
+  absl::Status Close(StatusCode code, std::string message = "") { return call_.Finish(code, std::move(message)); }
+  // Aborts with RST_STREAM(CANCEL).
+  void Cancel() { call_.Cancel(); }
+
+  const std::vector<HeaderField>& request_metadata() const { return call_.request_metadata(); }
+  absl::optional<absl::Time> deadline() const { return call_.deadline(); }
+
+ private:
+  ServerCall& call_;
+};
 
 // --- typed helpers over the byte-oriented call API (M = protobuf message) ---
 

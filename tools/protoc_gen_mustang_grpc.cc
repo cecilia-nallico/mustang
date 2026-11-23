@@ -141,13 +141,19 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     for (int m = 0; m < service->method_count(); m++) {
       const MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
+      const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
+      const std::string stream = "mustang::grpc::ServerStream<" + in + ", " + out + ">";
       *header += "  // " + MethodSignatureComment(method) + "\n";
-      if (method->client_streaming()) {
-        *header += "  virtual void " + mname + "(mustang::grpc::ServerCall& call) = 0;\n";
-      } else {
-        *header += "  virtual void " + mname + "(mustang::grpc::ServerCall& call, const " + in +
+      if (!method->client_streaming() && !method->server_streaming()) {
+        // Unary: the framework writes the response or the error status.
+        *header += "  virtual absl::StatusOr<" + out + "> " + mname +
+                   "(mustang::grpc::UnaryContext& ctx, const " + in + "& request) = 0;\n";
+      } else if (!method->client_streaming()) {
+        *header += "  virtual void " + mname + "(" + stream + "& stream, const " + in +
                    "& request) = 0;\n";
+      } else {
+        *header += "  virtual void " + mname + "(" + stream + "& stream) = 0;\n";
       }
     }
     *header += "};\n\n";
@@ -182,18 +188,42 @@ class MustangGrpcGenerator : public google::protobuf::compiler::CodeGenerator {
     for (int m = 0; m < service->method_count(); m++) {
       const MethodDescriptor* method = service->method(m);
       const std::string in = CppType(method->input_type());
+      const std::string out = CppType(method->output_type());
       const std::string mname(method->name());
+      const std::string stream = "mustang::grpc::ServerStream<" + in + ", " + out + ">";
       *source += "  server.Register(\"" + MethodPath(service, method) +
                  "\", [handler](mustang::grpc::ServerCall& call) {\n";
-      if (!method->client_streaming()) {
+      if (!method->client_streaming() && !method->server_streaming()) {
+        // Unary: framework reads the request, calls the handler, writes
+        // the response or the mapped error status (+ response metadata).
         *source += "    absl::StatusOr<" + in + "> request = mustang::grpc::ReadOne<" + in + ">(call);\n";
         *source += "    if (!request.ok()) {\n";
         *source += "      (void)call.Finish(mustang::grpc::StatusCode::kInternal,\n";
         *source += "                           std::string(request.status().message()));\n";
         *source += "      return;\n    }\n";
-        *source += "    handler->" + mname + "(call, *request);\n";
+        *source += "    mustang::grpc::UnaryContext ctx(call);\n";
+        *source += "    absl::StatusOr<" + out + "> response = handler->" + mname + "(ctx, *request);\n";
+        *source += "    if (!response.ok()) {\n";
+        *source += "      (void)call.Finish(mustang::grpc::ToGrpcCode(response.status().code()),\n";
+        *source += "                           std::string(response.status().message()),\n";
+        *source += "                           ctx.TakeResponseMetadata());\n";
+        *source += "      return;\n    }\n";
+        *source += "    if (!mustang::grpc::WriteMessage(call, *response).ok()) {\n";
+        *source += "      return;\n    }\n";
+        *source += "    (void)call.Finish(mustang::grpc::StatusCode::kOk, \"\",\n";
+        *source += "                         ctx.TakeResponseMetadata());\n";
       } else {
-        *source += "    handler->" + mname + "(call);\n";
+        *source += "    " + stream + " stream(call);\n";
+        if (!method->client_streaming()) {
+          *source += "    absl::StatusOr<" + in + "> request = mustang::grpc::ReadOne<" + in + ">(call);\n";
+          *source += "    if (!request.ok()) {\n";
+          *source += "      (void)call.Finish(mustang::grpc::StatusCode::kInternal,\n";
+          *source += "                           std::string(request.status().message()));\n";
+          *source += "      return;\n    }\n";
+          *source += "    handler->" + mname + "(stream, *request);\n";
+        } else {
+          *source += "    handler->" + mname + "(stream);\n";
+        }
       }
       *source += "  });\n";
     }

@@ -35,3 +35,5 @@ service TestService {
   rpc Chat(stream SimpleRequest) returns (stream SimpleResponse);
   rpc Metadata(MetadataRequest) returns (SimpleResponse);
 }
+
+// regen

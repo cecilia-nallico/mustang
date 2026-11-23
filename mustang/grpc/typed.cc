@@ -43,6 +43,48 @@ absl::StatusCode ToAbslCode(StatusCode code) {
   return absl::StatusCode::kUnknown;
 }
 
+StatusCode ToGrpcCode(absl::StatusCode code) {
+  switch (code) {
+    case absl::StatusCode::kOk:
+      return StatusCode::kOk;
+    case absl::StatusCode::kCancelled:
+      return StatusCode::kCancelled;
+    case absl::StatusCode::kUnknown:
+      return StatusCode::kUnknown;
+    case absl::StatusCode::kInvalidArgument:
+      return StatusCode::kInvalidArgument;
+    case absl::StatusCode::kDeadlineExceeded:
+      return StatusCode::kDeadlineExceeded;
+    case absl::StatusCode::kNotFound:
+      return StatusCode::kNotFound;
+    case absl::StatusCode::kAlreadyExists:
+      return StatusCode::kAlreadyExists;
+    case absl::StatusCode::kPermissionDenied:
+      return StatusCode::kPermissionDenied;
+    case absl::StatusCode::kResourceExhausted:
+      return StatusCode::kResourceExhausted;
+    case absl::StatusCode::kFailedPrecondition:
+      return StatusCode::kFailedPrecondition;
+    case absl::StatusCode::kAborted:
+      return StatusCode::kAborted;
+    case absl::StatusCode::kOutOfRange:
+      return StatusCode::kOutOfRange;
+    case absl::StatusCode::kUnimplemented:
+      return StatusCode::kUnimplemented;
+    case absl::StatusCode::kInternal:
+      return StatusCode::kInternal;
+    case absl::StatusCode::kUnavailable:
+      return StatusCode::kUnavailable;
+    case absl::StatusCode::kDataLoss:
+      return StatusCode::kDataLoss;
+    case absl::StatusCode::kUnauthenticated:
+      return StatusCode::kUnauthenticated;
+    case absl::StatusCode::kDoNotUseReservedForFutureExpansionUseDefaultInSwitchInstead_:
+      break;
+  }
+  return StatusCode::kUnknown;
+}
+
 absl::Status ToAbslStatus(const CallResult& result) {
   if (result.ok()) {
     return absl::OkStatus();
